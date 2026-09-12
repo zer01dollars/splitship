@@ -6,6 +6,9 @@ import {
   humanizeSubject,
   resolveProvider,
   buildXPost,
+  commitBulletLabel,
+  buildPrompt,
+  toneCopy,
 } from '../src/generate.js';
 
 const fixtureCtx = {
@@ -25,6 +28,27 @@ describe('humanizeSubject', () => {
   it('strips conventional prefixes', () => {
     assert.equal(humanizeSubject('feat(api): add bulk export'), 'Add bulk export');
     assert.equal(humanizeSubject('fix: prevent double-charge'), 'Prevent double-charge');
+  });
+});
+
+describe('commitBulletLabel', () => {
+  it('prefers prTitle when present', () => {
+    assert.equal(
+      commitBulletLabel({
+        subject: 'feat: raw',
+        prTitle: 'Add bulk export',
+        prNumber: 7,
+      }),
+      'Add bulk export (#7)',
+    );
+    assert.equal(commitBulletLabel({ subject: 'feat: raw' }), 'feat: raw');
+  });
+});
+
+describe('toneCopy', () => {
+  it('returns technical and friendly variants', () => {
+    assert.match(toneCopy('customer', { customer: 'technical' }).customerIntro, /Release notes/i);
+    assert.match(toneCopy('customer', { customer: 'friendly' }).customerIntro, /Thanks/i);
   });
 });
 
@@ -92,6 +116,44 @@ describe('generateOffline', () => {
     assert.doesNotMatch(files.dev, /chore: bump/);
     assert.doesNotMatch(files.dev, /rename webhook/);
     assert.match(files.dev, /bulk export/);
+  });
+
+  it('uses prTitle in bullets when present', () => {
+    const files = generateOffline({
+      ...fixtureCtx,
+      commits: [
+        {
+          sha: 'abc',
+          subject: 'feat: raw commit',
+          author: 'ada',
+          prTitle: 'Ship bulk export API',
+          prNumber: 9,
+        },
+      ],
+    });
+    assert.match(files.dev, /Ship bulk export API/);
+    assert.match(files.customer, /Ship bulk export API/);
+  });
+
+  it('applies tone wording for customer channel', () => {
+    const friendly = generateOffline(fixtureCtx, {
+      tone: { customer: 'friendly', linkedin: 'professional' },
+    });
+    assert.match(friendly.customer, /Thanks for shipping/);
+    const technical = generateOffline(fixtureCtx, {
+      tone: { customer: 'technical', linkedin: 'technical' },
+    });
+    assert.match(technical.customer, /Release notes for/);
+  });
+});
+
+describe('buildPrompt', () => {
+  it('includes tone guidance', () => {
+    const p = buildPrompt(fixtureCtx, {
+      tone: { dev: 'technical', customer: 'casual', linkedin: 'professional' },
+    });
+    assert.match(p, /casual/);
+    assert.match(p, /technical/);
   });
 });
 

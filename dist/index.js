@@ -34800,9 +34800,12 @@ const DEFAULTS = {
     linkedin: 'LINKEDIN.md',
     // x omitted by default; write-x input / outputs.x enables X.md
   },
-  outputDir: '.',
+  outputDir: 'splitship-out',
   changelogPath: 'CHANGELOG.md',
   writeX: true,
+  updateRelease: true,
+  appendChangelog: true,
+  createPr: false,
   llm: {
     provider: 'auto',
     model: null,
@@ -34819,7 +34822,26 @@ const DEFAULTS = {
   },
   excludeTypes: [],
   excludeSubjects: [],
+  excludePaths: [],
+  polar: {
+    organizationId: null,
+  },
 };
+
+/**
+ * Parse a boolean-ish action input with a default when absent/empty.
+ * @param {unknown} value
+ * @param {boolean} defaultValue
+ * @returns {boolean}
+ */
+function boolInput(value, defaultValue) {
+  if (value === undefined || value === null || value === '') {
+    return defaultValue;
+  }
+  if (value === true || value === 'true') return true;
+  if (value === false || value === 'false') return false;
+  return Boolean(value);
+}
 
 /**
  * Load SplitShip config from YAML file + action inputs / env overrides.
@@ -34850,6 +34872,27 @@ function loadConfig({ configPath = 'splitship.yml', inputs = {} } = {}) {
         ? Boolean(fileConfig.writeX)
         : DEFAULTS.writeX;
 
+  const updateRelease =
+    inputs.updateRelease !== undefined && inputs.updateRelease !== ''
+      ? boolInput(inputs.updateRelease, DEFAULTS.updateRelease)
+      : fileConfig.updateRelease !== undefined
+        ? Boolean(fileConfig.updateRelease)
+        : DEFAULTS.updateRelease;
+
+  const appendChangelog =
+    inputs.appendChangelog !== undefined && inputs.appendChangelog !== ''
+      ? boolInput(inputs.appendChangelog, DEFAULTS.appendChangelog)
+      : fileConfig.appendChangelog !== undefined
+        ? Boolean(fileConfig.appendChangelog)
+        : DEFAULTS.appendChangelog;
+
+  const createPr =
+    inputs.createPr !== undefined && inputs.createPr !== ''
+      ? boolInput(inputs.createPr, DEFAULTS.createPr)
+      : fileConfig.createPr !== undefined
+        ? Boolean(fileConfig.createPr)
+        : DEFAULTS.createPr;
+
   return {
     ...DEFAULTS,
     ...fileConfig,
@@ -34867,6 +34910,16 @@ function loadConfig({ configPath = 'splitship.yml', inputs = {} } = {}) {
     },
     excludeTypes: fileConfig.excludeTypes || DEFAULTS.excludeTypes,
     excludeSubjects: fileConfig.excludeSubjects || DEFAULTS.excludeSubjects,
+    excludePaths: fileConfig.excludePaths || DEFAULTS.excludePaths,
+    polar: {
+      ...DEFAULTS.polar,
+      ...(fileConfig.polar || {}),
+      organizationId:
+        inputs.polarOrganizationId ||
+        process.env.POLAR_ORGANIZATION_ID ||
+        fileConfig.polar?.organizationId ||
+        DEFAULTS.polar.organizationId,
+    },
     llm: {
       ...DEFAULTS.llm,
       ...(fileConfig.llm || {}),
@@ -34879,15 +34932,10 @@ function loadConfig({ configPath = 'splitship.yml', inputs = {} } = {}) {
       fileConfig.changelogPath ||
       DEFAULTS.changelogPath,
     writeX,
+    updateRelease,
+    appendChangelog,
+    createPr,
     tag: inputs.tag || fileConfig.tag || null,
-    updateRelease:
-      inputs.updateRelease === true ||
-      inputs.updateRelease === 'true' ||
-      Boolean(fileConfig.updateRelease),
-    appendChangelog:
-      inputs.appendChangelog === true ||
-      inputs.appendChangelog === 'true' ||
-      Boolean(fileConfig.appendChangelog),
     anthropicApiKey:
       inputs.anthropicApiKey ||
       process.env.ANTHROPIC_API_KEY ||
@@ -34901,24 +34949,79 @@ function loadConfig({ configPath = 'splitship.yml', inputs = {} } = {}) {
 
 ;// CONCATENATED MODULE: ./src/license.js
 /**
- * Polar license validation stub.
- * Real Polar product checkout remains manual; this checks key presence
- * and respects SKIP_LICENSE / skip-license for CI and local runs.
+ * Polar license validation against the customer-portal validate API.
+ * Skip via SKIP_LICENSE / skip-license for CI and local runs.
  *
- * Single-use tier: key prefix SPLITSHIP-1X or env SPLITSHIP_LICENSE_TIER=single
- * → tier: 'single_use' (caller may write .splitship-usage.json audit marker).
+ * Single-use tier: key prefix SPLITSHIP-1X, known benefit id, or
+ * env SPLITSHIP_LICENSE_TIER=single → tier: 'single_use'
+ * (caller may write .splitship-usage.json audit marker).
  */
 
 
 
+
+/** Default Polar organization id for driftwatch-kit (SplitShip). */
+const DEFAULT_POLAR_ORG_ID = 'b6303f05-be1c-4b45-b847-5979667a3d12';
+
+/** Known Polar benefit id for SplitShip Single Use ($9). */
+const SINGLE_USE_BENEFIT_ID = '3011bec7-d400-47a8-8dc2-761e4f113041';
+
+const VALIDATE_URL =
+  'https://api.polar.sh/v1/customer-portal/license-keys/validate';
+
+/**
+ * Resolve Polar organization_id from input → env → config → default.
+ * @param {object} [options]
+ * @param {string} [options.organizationId]
+ * @param {string} [options.configOrganizationId]
+ * @returns {string}
+ */
+function resolveOrganizationId({
+  organizationId,
+  configOrganizationId,
+} = {}) {
+  return (
+    (organizationId && String(organizationId).trim()) ||
+    (process.env.POLAR_ORGANIZATION_ID &&
+      String(process.env.POLAR_ORGANIZATION_ID).trim()) ||
+    (configOrganizationId && String(configOrganizationId).trim()) ||
+    DEFAULT_POLAR_ORG_ID
+  );
+}
+
+/**
+ * @param {string} [licenseKey]
+ * @param {string} [benefitId]
+ * @returns {string|undefined}
+ */
+function detectTier(licenseKey = '', benefitId = '') {
+  const key = String(licenseKey || '').trim();
+  if (
+    key.startsWith('SPLITSHIP-1X') ||
+    process.env.SPLITSHIP_LICENSE_TIER === 'single' ||
+    String(benefitId || '') === SINGLE_USE_BENEFIT_ID
+  ) {
+    return 'single_use';
+  }
+  return undefined;
+}
 
 /**
  * @param {object} options
  * @param {string} [options.licenseKey]
  * @param {boolean} [options.skip]
- * @returns {Promise<{ ok: boolean, reason: string, tier?: string }>}
+ * @param {string} [options.organizationId]
+ * @param {string} [options.configOrganizationId]
+ * @param {typeof fetch} [options.fetchImpl]
+ * @returns {Promise<{ ok: boolean, reason: string, tier?: string, benefitId?: string }>}
  */
-async function validateLicense({ licenseKey, skip = false } = {}) {
+async function validateLicense({
+  licenseKey,
+  skip = false,
+  organizationId,
+  configOrganizationId,
+  fetchImpl = globalThis.fetch,
+} = {}) {
   if (skip || process.env.SKIP_LICENSE === '1' || process.env.SKIP_LICENSE === 'true') {
     return { ok: true, reason: 'skipped', tier: detectTier(licenseKey) };
   }
@@ -34930,30 +35033,78 @@ async function validateLicense({ licenseKey, skip = false } = {}) {
     };
   }
 
-  // Stub: accept any non-empty key until Polar product is wired.
-  // Future: call Polar license validation API.
   const key = String(licenseKey).trim();
-  if (key.length < 8) {
+  const orgId = resolveOrganizationId({
+    organizationId,
+    configOrganizationId,
+  });
+
+  const PLACEHOLDER = 'REPLACE_WITH_DRIFTWATCH_KIT_ORG_UUID';
+  if (!orgId || orgId === PLACEHOLDER) {
+    return {
+      ok: false,
+      reason: 'missing_organization_id',
+    };
+  }
+
+  const tierHint = detectTier(key);
+  /** @type {Record<string, unknown>} */
+  const body = {
+    key,
+    organization_id: orgId,
+  };
+  if (tierHint === 'single_use') {
+    body.increment_usage = 1;
+  }
+
+  let res;
+  try {
+    res = await fetchImpl(VALIDATE_URL, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', accept: 'application/json' },
+      body: JSON.stringify(body),
+    });
+  } catch {
+    return { ok: false, reason: 'license_api_error' };
+  }
+
+  if (res.status === 404) {
     return { ok: false, reason: 'invalid_license_key' };
   }
 
-  const tier = detectTier(key);
-  return { ok: true, reason: 'stub_accepted', tier };
-}
-
-/**
- * @param {string} [licenseKey]
- * @returns {string|undefined}
- */
-function detectTier(licenseKey = '') {
-  const key = String(licenseKey || '').trim();
-  if (
-    key.startsWith('SPLITSHIP-1X') ||
-    process.env.SPLITSHIP_LICENSE_TIER === 'single'
-  ) {
-    return 'single_use';
+  if (!res.ok) {
+    if (res.status === 400 || res.status === 403 || res.status === 422) {
+      return { ok: false, reason: 'invalid_license_key' };
+    }
+    return { ok: false, reason: 'license_api_error' };
   }
-  return undefined;
+
+  let data;
+  try {
+    data = await res.json();
+  } catch {
+    return { ok: false, reason: 'license_api_error' };
+  }
+
+  const status = String(data?.status || '').toLowerCase();
+  const valid =
+    status === 'granted' ||
+    data?.valid === true ||
+    (status && status !== 'revoked' && status !== 'disabled' && data?.id);
+
+  if (!valid || status === 'revoked' || status === 'disabled') {
+    return { ok: false, reason: 'invalid_license_key' };
+  }
+
+  const benefitId = data?.benefit_id || data?.benefitId || '';
+  const tier = detectTier(key, benefitId) || tierHint;
+
+  return {
+    ok: true,
+    reason: 'granted',
+    tier,
+    benefitId: benefitId || undefined,
+  };
 }
 
 /**
@@ -34993,6 +35144,11 @@ function writeUsageMarker({
  * @property {string} subject
  * @property {string} [body]
  * @property {string} [author]
+ * @property {string[]} [parents]
+ * @property {string[]} [files]
+ * @property {string} [prTitle]
+ * @property {number} [prNumber]
+ * @property {string} [prUrl]
  */
 
 /**
@@ -35034,6 +35190,150 @@ function findBreaking(commits = []) {
 }
 
 /**
+ * True when commit looks like a merge (subject or multiple parents).
+ * @param {CommitInfo} commit
+ * @returns {boolean}
+ */
+function isMergeCommit(commit = {}) {
+  const subject = commit.subject || '';
+  if (subject.startsWith('Merge ')) return true;
+  if (Array.isArray(commit.parents) && commit.parents.length > 1) return true;
+  return false;
+}
+
+/**
+ * Drop commits that only touch excluded path prefixes.
+ * Best-effort: if a commit has no file list, keep it.
+ * @param {CommitInfo[]} commits
+ * @param {string[]} excludePaths
+ * @returns {CommitInfo[]}
+ */
+function filterExcludedPaths(commits = [], excludePaths = []) {
+  const prefixes = (excludePaths || [])
+    .map((p) => String(p || '').trim())
+    .filter(Boolean);
+  if (!prefixes.length) return commits;
+
+  return commits.filter((c) => {
+    const files = c.files;
+    if (!Array.isArray(files) || files.length === 0) return true;
+    const onlyExcluded = files.every((f) =>
+      prefixes.some((prefix) => String(f).startsWith(prefix)),
+    );
+    return !onlyExcluded;
+  });
+}
+
+/**
+ * @param {object} c raw commit-ish
+ * @returns {CommitInfo}
+ */
+function normalizeCommit(c = {}) {
+  const message = c.subject || c.message || c.commit?.message || '';
+  const parents =
+    c.parents ||
+    (Array.isArray(c.commit?.parents)
+      ? c.commit.parents.map((p) => p.sha || p)
+      : undefined);
+  return {
+    sha: (c.sha || '0000000').toString().slice(0, 7),
+    subject: subjectFromMessage(message),
+    body:
+      c.body ||
+      String(message).split('\n').slice(1).join('\n').trim() ||
+      '',
+    author:
+      c.author ||
+      c.commit?.author?.name ||
+      c.author?.login ||
+      'unknown',
+    parents: parents
+      ? parents.map((p) => (typeof p === 'string' ? p : p?.sha || String(p)))
+      : undefined,
+    files: Array.isArray(c.files)
+      ? c.files.map((f) => (typeof f === 'string' ? f : f?.filename)).filter(Boolean)
+      : undefined,
+    prTitle: c.prTitle,
+    prNumber: c.prNumber,
+    prUrl: c.prUrl,
+  };
+}
+
+/**
+ * Best-effort: attach associated PR title/number/url to each commit.
+ * @param {import('@actions/github').GitHub} octokit
+ * @param {string} owner
+ * @param {string} repo
+ * @param {CommitInfo[]} commits
+ * @returns {Promise<CommitInfo[]>}
+ */
+async function enrichWithPullRequests(octokit, owner, repo, commits) {
+  if (!octokit || !owner || !repo) return commits;
+  const out = [];
+  for (const c of commits) {
+    try {
+      const res = await octokit.rest.repos.listPullRequestsAssociatedWithCommit({
+        owner,
+        repo,
+        commit_sha: c.sha,
+      });
+      const pr = res.data?.[0];
+      if (pr) {
+        out.push({
+          ...c,
+          prTitle: pr.title || undefined,
+          prNumber: pr.number,
+          prUrl: pr.html_url || undefined,
+        });
+        continue;
+      }
+    } catch {
+      // best-effort
+    }
+    out.push(c);
+  }
+  return out;
+}
+
+/**
+ * When excludePaths is set, fetch per-commit file lists (best-effort).
+ * @param {import('@actions/github').GitHub} octokit
+ * @param {string} owner
+ * @param {string} repo
+ * @param {CommitInfo[]} commits
+ * @returns {Promise<CommitInfo[]>}
+ */
+async function enrichWithFiles(octokit, owner, repo, commits) {
+  if (!octokit || !owner || !repo) return commits;
+  const out = [];
+  for (const c of commits) {
+    if (Array.isArray(c.files) && c.files.length) {
+      out.push(c);
+      continue;
+    }
+    try {
+      const res = await octokit.rest.repos.getCommit({
+        owner,
+        repo,
+        ref: c.sha,
+      });
+      const files = (res.data.files || [])
+        .map((f) => f.filename)
+        .filter(Boolean);
+      const parents = (res.data.parents || []).map((p) => p.sha);
+      out.push({
+        ...c,
+        files,
+        parents: parents.length ? parents : c.parents,
+      });
+    } catch {
+      out.push(c);
+    }
+  }
+  return out;
+}
+
+/**
  * Gather commits between tags via Octokit, or return fixture as-is.
  * @param {object} options
  * @param {import('@actions/github').GitHub|null} [options.octokit]
@@ -35041,6 +35341,7 @@ function findBreaking(commits = []) {
  * @param {string} [options.repo]
  * @param {string} options.tag
  * @param {ReleaseContext} [options.fixture]
+ * @param {string[]} [options.excludePaths]
  * @returns {Promise<ReleaseContext>}
  */
 async function gatherReleaseContext({
@@ -35049,18 +35350,18 @@ async function gatherReleaseContext({
   repo,
   tag,
   fixture = null,
+  excludePaths = [],
 } = {}) {
   if (fixture) {
+    let commits = (fixture.commits || [])
+      .map((c) => normalizeCommit(c))
+      .filter((c) => !isMergeCommit(c));
+    commits = filterExcludedPaths(commits, excludePaths);
     return {
       tag: fixture.tag || tag || 'v0.0.0',
       repo: fixture.repo || repo || 'app',
       owner: fixture.owner || owner || 'org',
-      commits: (fixture.commits || []).map((c) => ({
-        sha: c.sha || '0000000',
-        subject: subjectFromMessage(c.subject || c.message || ''),
-        body: c.body || '',
-        author: c.author || 'unknown',
-      })),
+      commits,
       previousTag: fixture.previousTag || null,
       compareUrl: fixture.compareUrl || null,
     };
@@ -35070,7 +35371,6 @@ async function gatherReleaseContext({
     throw new Error('gatherReleaseContext requires octokit+owner+repo+tag or a fixture');
   }
 
-  // Resolve previous tag (best-effort)
   let previousTag = null;
   try {
     const releases = await octokit.rest.repos.listReleases({
@@ -35093,12 +35393,15 @@ async function gatherReleaseContext({
         base: previousTag,
         head: tag,
       });
-      commits = (cmp.data.commits || []).map((c) => ({
-        sha: c.sha.slice(0, 7),
-        subject: subjectFromMessage(c.commit?.message || ''),
-        body: (c.commit?.message || '').split('\n').slice(1).join('\n').trim(),
-        author: c.commit?.author?.name || c.author?.login || 'unknown',
-      }));
+      commits = (cmp.data.commits || []).map((c) => {
+        const parents = (c.parents || []).map((p) => p.sha);
+        return normalizeCommit({
+          sha: c.sha,
+          message: c.commit?.message || '',
+          author: c.commit?.author?.name || c.author?.login || 'unknown',
+          parents,
+        });
+      });
     } else {
       const list = await octokit.rest.repos.listCommits({
         owner,
@@ -35106,16 +35409,28 @@ async function gatherReleaseContext({
         sha: tag,
         per_page: 30,
       });
-      commits = list.data.map((c) => ({
-        sha: c.sha.slice(0, 7),
-        subject: subjectFromMessage(c.commit?.message || ''),
-        body: (c.commit?.message || '').split('\n').slice(1).join('\n').trim(),
-        author: c.commit?.author?.name || c.author?.login || 'unknown',
-      }));
+      commits = list.data.map((c) => {
+        const parents = (c.parents || []).map((p) => p.sha);
+        return normalizeCommit({
+          sha: c.sha,
+          message: c.commit?.message || '',
+          author: c.commit?.author?.name || c.author?.login || 'unknown',
+          parents,
+        });
+      });
     }
   } catch (err) {
     throw new Error(`Failed to gather commits: ${err.message}`);
   }
+
+  commits = commits.filter((c) => !isMergeCommit(c));
+
+  if ((excludePaths || []).length) {
+    commits = await enrichWithFiles(octokit, owner, repo, commits);
+    commits = filterExcludedPaths(commits, excludePaths);
+  }
+
+  commits = await enrichWithPullRequests(octokit, owner, repo, commits);
 
   return {
     tag,
@@ -35257,7 +35572,60 @@ function resolveProvider(config = {}) {
 }
 
 /**
- * Deterministic offline generation from commit subjects.
+ * Display label for a commit — prefer associated PR title when present.
+ * @param {import('./gather.js').CommitInfo} c
+ * @returns {string}
+ */
+function commitBulletLabel(c = {}) {
+  if (c.prTitle && String(c.prTitle).trim()) {
+    const num = c.prNumber ? ` (#${c.prNumber})` : '';
+    return `${String(c.prTitle).trim()}${num}`;
+  }
+  return c.subject || '';
+}
+
+/**
+ * Tone copy tweaks for offline templates.
+ * @param {string} channel
+ * @param {object} toneConfig
+ */
+function toneCopy(channel, toneConfig = {}) {
+  const t = String(toneConfig?.[channel] || toneConfig || 'friendly').toLowerCase();
+  const map = {
+    technical: {
+      customerIntro: 'Release notes for',
+      customerOutro: 'See DEV.md for implementation details.',
+      linkedinOpen: 'Shipped',
+      linkedinClose: 'Details in the release notes.',
+      xEmoji: '📦',
+    },
+    friendly: {
+      customerIntro: "Thanks for shipping with us. Here's what changed in",
+      customerOutro: 'We appreciate your feedback — reply anytime.',
+      linkedinOpen: 'We just shipped',
+      linkedinClose: 'Built in public. Feedback welcome.',
+      xEmoji: '🚢',
+    },
+    professional: {
+      customerIntro: 'Summary of changes in',
+      customerOutro: 'Please review before upgrading in production.',
+      linkedinOpen: 'Announcing',
+      linkedinClose: 'Full notes are available with the release.',
+      xEmoji: '🚀',
+    },
+    casual: {
+      customerIntro: "Hey — here's what's new in",
+      customerOutro: 'Hit us up if anything feels off.',
+      linkedinOpen: 'Just dropped',
+      linkedinClose: 'Would love your thoughts.',
+      xEmoji: '✨',
+    },
+  };
+  return map[t] || map.friendly;
+}
+
+/**
+ * Deterministic offline generation from commit subjects / PR titles.
  * Always includes an X/Twitter draft (≤280 chars).
  * @param {import('./gather.js').ReleaseContext} ctx
  * @param {object} [config]
@@ -35267,23 +35635,35 @@ function generateOffline(ctx, config = {}) {
   const repo = ctx.repo || 'project';
   const commits = ctx.commits || [];
   const breaking = findBreaking(commits);
+  const labels = commits.map((c) => commitBulletLabel(c)).filter(Boolean);
   const subjects = commits.map((c) => c.subject).filter(Boolean);
   const authors = [
     ...new Set(commits.map((c) => c.author).filter((a) => a && a !== 'unknown')),
   ];
 
-  const features = subjects.filter((s) => /^(feat|feature)(\(.+\))?[!]?:/i.test(s));
-  const fixes = subjects.filter((s) => /^(fix)(\(.+\))?[!]?:/i.test(s));
-  const other = subjects.filter(
-    (s) =>
-      !/^(feat|feature|fix)(\(.+\))?[!]?:/i.test(s) &&
-      !breaking.includes(s),
+  const features = labels.filter((s, i) =>
+    /^(feat|feature)(\(.+\))?[!]?:/i.test(subjects[i] || s),
   );
+  const fixes = labels.filter((s, i) =>
+    /^(fix)(\(.+\))?[!]?:/i.test(subjects[i] || s),
+  );
+  const other = labels.filter((s, i) => {
+    const subj = subjects[i] || s;
+    return (
+      !/^(feat|feature|fix)(\(.+\))?[!]?:/i.test(subj) &&
+      !breaking.includes(subj)
+    );
+  });
 
   const bullet = (items, empty = '_None_') =>
     items.length ? items.map((i) => `- ${i}`).join('\n') : empty;
 
-  const customerBullets = subjects.map((s) => `- ${humanizeSubject(s)}`);
+  const tone = config.tone || {};
+  const customerTone = toneCopy('customer', tone);
+  const linkedinTone = toneCopy('linkedin', tone);
+  const xTone = toneCopy('linkedin', tone); // X leans social; reuse linkedin channel or casual
+
+  const customerBullets = labels.map((s) => `- ${humanizeSubject(s)}`);
 
   const dev = `# Developer Notes — ${tag}
 
@@ -35306,7 +35686,12 @@ ${bullet(other)}
 ## Commits
 ${
   commits.length
-    ? commits.map((c) => `- \`${c.sha}\` ${c.subject}${c.author ? ` (${c.author})` : ''}`).join('\n')
+    ? commits
+        .map((c) => {
+          const label = commitBulletLabel(c);
+          return `- \`${c.sha}\` ${label}${c.author ? ` (${c.author})` : ''}`;
+        })
+        .join('\n')
     : '_No commits_'
 }
 
@@ -35319,7 +35704,7 @@ Generated by SplitShip (offline) · Made By Zer01
 
   const customer = `# What's New — ${tag}
 
-Thanks for shipping with us. Here's what changed in **${tag}**:
+${customerTone.customerIntro} **${tag}**:
 
 ${customerBullets.length ? customerBullets.join('\n') : '- Maintenance and internal improvements.'}
 
@@ -35328,25 +35713,33 @@ ${
     ? `\n## Important\n${breaking.map((b) => `- ${humanizeSubject(b)}`).join('\n')}\n`
     : ''
 }
-We appreciate your feedback — reply anytime.
+${customerTone.customerOutro}
 
 —
 The ${repo} team
 `;
 
   const highlight =
-    features[0] || fixes[0] || subjects[0] || 'new improvements across the board';
-  const linkedin = `🚀 We just shipped **${tag}** of ${repo}.
+    features[0] || fixes[0] || labels[0] || 'new improvements across the board';
+  const linkedin = `🚀 ${linkedinTone.linkedinOpen} **${tag}** of ${repo}.
 
 Highlights:
-${(features.length ? features : subjects).slice(0, 3).map((s) => `• ${humanizeSubject(s)}`).join('\n') || `• ${humanizeSubject(highlight)}`}
+${(features.length ? features : labels).slice(0, 3).map((s) => `• ${humanizeSubject(s)}`).join('\n') || `• ${humanizeSubject(highlight)}`}
 
-${breaking.length ? `⚠️ Note: this release includes breaking changes — check the notes before upgrading.\n\n` : ''}Built in public. Feedback welcome.
+${breaking.length ? `⚠️ Note: this release includes breaking changes — check the notes before upgrading.\n\n` : ''}${linkedinTone.linkedinClose}
 
 #buildinpublic #shipping #${slug(repo)}
 `;
 
-  const x = buildXPost({ tag, repo, features, fixes, subjects, breaking });
+  const x = buildXPost({
+    tag,
+    repo,
+    features,
+    fixes,
+    subjects: labels,
+    breaking,
+    emoji: xTone.xEmoji,
+  });
 
   return {
     dev: dev.trim() + '\n',
@@ -35366,11 +35759,12 @@ function buildXPost({
   fixes = [],
   subjects = [],
   breaking = [],
+  emoji = '🚢',
 } = {}) {
   const highlight = humanizeSubject(
     features[0] || fixes[0] || subjects[0] || 'improvements',
   );
-  let post = `🚢 ${tag} of ${repo} is out — ${highlight}`;
+  let post = `${emoji} ${tag} of ${repo} is out — ${highlight}`;
   if (breaking.length) post += ' (breaking changes)';
   post += '. #shipping';
   if (post.length > 280) {
@@ -35396,7 +35790,7 @@ function slug(name = '') {
 
 async function generateWithAnthropic(ctx, config) {
   const model = config.llm?.model || 'claude-3-5-haiku-latest';
-  const prompt = buildPrompt(ctx);
+  const prompt = buildPrompt(ctx, config);
   const res = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
     headers: {
@@ -35418,7 +35812,7 @@ async function generateWithAnthropic(ctx, config) {
 
 async function generateWithOpenAI(ctx, config) {
   const model = config.llm?.model || 'gpt-4o-mini';
-  const prompt = buildPrompt(ctx);
+  const prompt = buildPrompt(ctx, config);
   const res = await fetch('https://api.openai.com/v1/chat/completions', {
     method: 'POST',
     headers: {
@@ -35437,11 +35831,27 @@ async function generateWithOpenAI(ctx, config) {
   return parseLlmDocuments(text, ctx, config);
 }
 
-function buildPrompt(ctx) {
+/**
+ * @param {import('./gather.js').ReleaseContext} ctx
+ * @param {object} [config]
+ */
+function buildPrompt(ctx, config = {}) {
+  const tone = config.tone || {};
   const commits = (ctx.commits || [])
-    .map((c) => `- ${c.sha} ${c.subject}${c.author ? ` (${c.author})` : ''}`)
+    .map((c) => {
+      const label = commitBulletLabel(c);
+      return `- ${c.sha} ${label}${c.author ? ` (${c.author})` : ''}`;
+    })
     .join('\n');
   return `You are SplitShip. Produce four documents for release ${ctx.tag} of ${ctx.repo}.
+
+Tone guidance:
+- DEV.md: ${tone.dev || 'technical'}
+- CUSTOMER.md: ${tone.customer || 'friendly'}
+- LINKEDIN.md: ${tone.linkedin || 'professional'}
+- X.md: concise social (${tone.linkedin || 'professional'} / casual)
+
+Prefer PR titles over raw commit subjects when both appear in the commit list.
 
 Return EXACTLY this structure (no extra commentary):
 
@@ -35727,7 +36137,163 @@ async function updateReleaseWithCustomer({
   return { updated: true, releaseId: release.id };
 }
 
+;// CONCATENATED MODULE: ./src/create-pr.js
+/**
+ * Best-effort: open a PR with generated SplitShip notes instead of
+ * committing directly to the default branch.
+ */
+
+
+
+
+/**
+ * Sanitize tag for branch name.
+ * @param {string} tag
+ * @returns {string}
+ */
+function notesBranchName(tag = 'release') {
+  const safe = String(tag).replace(/[^a-zA-Z0-9._-]/g, '-');
+  return `splitship/notes-${safe}`;
+}
+
+/**
+ * Create branch + PR containing generated note files.
+ * Skips gracefully on permission / API errors.
+ *
+ * @param {object} options
+ * @param {import('@actions/github').GitHub} options.octokit
+ * @param {string} options.owner
+ * @param {string} options.repo
+ * @param {string} options.tag
+ * @param {Record<string, string|null|undefined>} options.paths absolute or cwd-relative paths written
+ * @param {string} [options.cwd]
+ * @param {string} [options.baseBranch]
+ * @returns {Promise<{ created: boolean, reason?: string, url?: string, branch?: string }>}
+ */
+async function createNotesPullRequest({
+  octokit,
+  owner,
+  repo,
+  tag,
+  paths = {},
+  cwd = process.cwd(),
+  baseBranch = null,
+} = {}) {
+  if (!octokit || !owner || !repo) {
+    return { created: false, reason: 'no_octokit' };
+  }
+
+  try {
+    let base = baseBranch;
+    if (!base) {
+      const repoInfo = await octokit.rest.repos.get({ owner, repo });
+      base = repoInfo.data.default_branch || 'main';
+    }
+
+    const baseRef = await octokit.rest.git.getRef({
+      owner,
+      repo,
+      ref: `heads/${base}`,
+    });
+    const baseSha = baseRef.data.object.sha;
+
+    const branch = notesBranchName(tag);
+    const refName = `heads/${branch}`;
+
+    // Create or reset branch to base
+    try {
+      await octokit.rest.git.createRef({
+        owner,
+        repo,
+        ref: `refs/${refName}`,
+        sha: baseSha,
+      });
+    } catch (err) {
+      const msg = String(err.message || err);
+      if (/already exists|Reference already exists/i.test(msg) || err.status === 422) {
+        await octokit.rest.git.updateRef({
+          owner,
+          repo,
+          ref: refName,
+          sha: baseSha,
+          force: true,
+        });
+      } else {
+        throw err;
+      }
+    }
+
+    const fileEntries = Object.values(paths).filter(Boolean);
+    // Also include changelog if present next to paths
+    const uniquePaths = [...new Set(fileEntries.map((p) => (0,external_node_path_namespaceObject.resolve)(cwd, p)))];
+
+    for (const abs of uniquePaths) {
+      if (!(0,external_node_fs_namespaceObject.existsSync)(abs)) continue;
+      const content = (0,external_node_fs_namespaceObject.readFileSync)(abs, 'utf8');
+      const repoPath = (0,external_node_path_namespaceObject.relative)(cwd, abs).replace(/\\/g, '/');
+      if (repoPath.startsWith('..')) continue;
+
+      let existingSha = null;
+      try {
+        const existing = await octokit.rest.repos.getContent({
+          owner,
+          repo,
+          path: repoPath,
+          ref: branch,
+        });
+        if (!Array.isArray(existing.data) && existing.data.sha) {
+          existingSha = existing.data.sha;
+        }
+      } catch {
+        existingSha = null;
+      }
+
+      await octokit.rest.repos.createOrUpdateFileContents({
+        owner,
+        repo,
+        path: repoPath,
+        message: `docs: SplitShip notes for ${tag}`,
+        content: Buffer.from(content, 'utf8').toString('base64'),
+        branch,
+        ...(existingSha ? { sha: existingSha } : {}),
+      });
+    }
+
+    const pr = await octokit.rest.pulls.create({
+      owner,
+      repo,
+      title: `docs: SplitShip release notes for ${tag}`,
+      head: branch,
+      base,
+      body: [
+        `Automated SplitShip notes for **${tag}**.`,
+        '',
+        'Generated files are on this branch for review.',
+        '',
+        '— Made By Zer01',
+      ].join('\n'),
+    });
+
+    return {
+      created: true,
+      url: pr.data.html_url,
+      branch,
+      number: pr.data.number,
+    };
+  } catch (err) {
+    const status = err.status || err.response?.status;
+    if (status === 401 || status === 403 || status === 404) {
+      return { created: false, reason: 'insufficient_permissions' };
+    }
+    return {
+      created: false,
+      reason: err.message || String(err),
+    };
+  }
+}
+
 ;// CONCATENATED MODULE: ./src/index.js
+
 
 
 
@@ -35759,18 +36325,10 @@ async function run(deps = {}) {
     const licenseKey =
       getInput('polar-license-key') || process.env.POLAR_LICENSE_KEY || '';
 
-    const license = await validateLicense({
-      licenseKey,
-      skip: skipLicense,
-    });
-
-    if (!license.ok) {
-      setFailed(
-        `SplitShip license check failed (${license.reason}). Set polar-license-key or skip-license: true for CI.`,
-      );
-      return { ok: false, reason: license.reason };
-    }
-    info(`License: ${license.reason}${license.tier ? ` (${license.tier})` : ''}`);
+    const polarOrgInput =
+      getInput('polar-organization-id') ||
+      process.env.POLAR_ORGANIZATION_ID ||
+      '';
 
     const writeXRaw = getInput('write-x');
     const config = loadConfig({
@@ -35784,8 +36342,26 @@ async function run(deps = {}) {
         writeX: writeXRaw === '' ? 'true' : writeXRaw,
         updateRelease: getInput('update-release') || undefined,
         appendChangelog: getInput('append-changelog') || undefined,
+        createPr: getInput('create-pr') || undefined,
+        polarOrganizationId: polarOrgInput || undefined,
       },
     });
+
+    const license = await validateLicense({
+      licenseKey,
+      skip: skipLicense,
+      organizationId: polarOrgInput || config.polar?.organizationId,
+      configOrganizationId: config.polar?.organizationId,
+      fetchImpl: deps.fetchImpl,
+    });
+
+    if (!license.ok) {
+      setFailed(
+        `SplitShip license check failed (${license.reason}). Set polar-license-key or skip-license: true for CI.`,
+      );
+      return { ok: false, reason: license.reason };
+    }
+    info(`License: ${license.reason}${license.tier ? ` (${license.tier})` : ''}`);
 
     const token = getInput('github-token') || process.env.GITHUB_TOKEN || '';
     const tag =
@@ -35801,10 +36377,20 @@ async function run(deps = {}) {
     let octokit = null;
     let ctx;
     if (deps.fixture) {
-      ctx = await gatherReleaseContext({ fixture: deps.fixture, tag });
+      ctx = await gatherReleaseContext({
+        fixture: deps.fixture,
+        tag,
+        excludePaths: config.excludePaths,
+      });
     } else if (token && owner && repo) {
       octokit = getOctokit(token);
-      ctx = await gatherReleaseContext({ octokit, owner, repo, tag });
+      ctx = await gatherReleaseContext({
+        octokit,
+        owner,
+        repo,
+        tag,
+        excludePaths: config.excludePaths,
+      });
     } else {
       ctx = await gatherReleaseContext({
         fixture: {
@@ -35813,6 +36399,7 @@ async function run(deps = {}) {
           owner: owner || 'org',
           commits: [],
         },
+        excludePaths: config.excludePaths,
       });
     }
 
@@ -35874,9 +36461,36 @@ async function run(deps = {}) {
       }
     }
 
+    let pullRequest = null;
+    if (config.createPr) {
+      if (!octokit && token && owner && repo) {
+        octokit = getOctokit(token);
+      }
+      if (octokit && owner && repo) {
+        const prPaths = { ...paths };
+        if (changelogPath) prPaths.changelog = changelogPath;
+        pullRequest = await createNotesPullRequest({
+          octokit,
+          owner,
+          repo,
+          tag: ctx.tag,
+          paths: prPaths,
+        });
+        info(
+          pullRequest.created
+            ? `Opened PR: ${pullRequest.url}`
+            : `create-pr skipped: ${pullRequest.reason}`,
+        );
+        if (pullRequest.url) setOutput('pr-url', pullRequest.url);
+      } else {
+        pullRequest = { created: false, reason: 'no_octokit' };
+        info('create-pr skipped: no octokit context');
+      }
+    }
+
     if (license.tier === 'single_use') {
       const marker = writeUsageMarker({
-        outputDir: config.outputDir || '.',
+        outputDir: config.outputDir || 'splitship-out',
         tag: ctx.tag,
       });
       info(`Single-use license marker: ${marker}`);
@@ -35889,6 +36503,7 @@ async function run(deps = {}) {
       files,
       changelogPath,
       releaseUpdate,
+      pullRequest,
       license,
     };
   } catch (err) {

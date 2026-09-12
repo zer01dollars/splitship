@@ -9,9 +9,12 @@ const DEFAULTS = {
     linkedin: 'LINKEDIN.md',
     // x omitted by default; write-x input / outputs.x enables X.md
   },
-  outputDir: '.',
+  outputDir: 'splitship-out',
   changelogPath: 'CHANGELOG.md',
   writeX: true,
+  updateRelease: true,
+  appendChangelog: true,
+  createPr: false,
   llm: {
     provider: 'auto',
     model: null,
@@ -28,7 +31,26 @@ const DEFAULTS = {
   },
   excludeTypes: [],
   excludeSubjects: [],
+  excludePaths: [],
+  polar: {
+    organizationId: null,
+  },
 };
+
+/**
+ * Parse a boolean-ish action input with a default when absent/empty.
+ * @param {unknown} value
+ * @param {boolean} defaultValue
+ * @returns {boolean}
+ */
+function boolInput(value, defaultValue) {
+  if (value === undefined || value === null || value === '') {
+    return defaultValue;
+  }
+  if (value === true || value === 'true') return true;
+  if (value === false || value === 'false') return false;
+  return Boolean(value);
+}
 
 /**
  * Load SplitShip config from YAML file + action inputs / env overrides.
@@ -59,6 +81,27 @@ export function loadConfig({ configPath = 'splitship.yml', inputs = {} } = {}) {
         ? Boolean(fileConfig.writeX)
         : DEFAULTS.writeX;
 
+  const updateRelease =
+    inputs.updateRelease !== undefined && inputs.updateRelease !== ''
+      ? boolInput(inputs.updateRelease, DEFAULTS.updateRelease)
+      : fileConfig.updateRelease !== undefined
+        ? Boolean(fileConfig.updateRelease)
+        : DEFAULTS.updateRelease;
+
+  const appendChangelog =
+    inputs.appendChangelog !== undefined && inputs.appendChangelog !== ''
+      ? boolInput(inputs.appendChangelog, DEFAULTS.appendChangelog)
+      : fileConfig.appendChangelog !== undefined
+        ? Boolean(fileConfig.appendChangelog)
+        : DEFAULTS.appendChangelog;
+
+  const createPr =
+    inputs.createPr !== undefined && inputs.createPr !== ''
+      ? boolInput(inputs.createPr, DEFAULTS.createPr)
+      : fileConfig.createPr !== undefined
+        ? Boolean(fileConfig.createPr)
+        : DEFAULTS.createPr;
+
   return {
     ...DEFAULTS,
     ...fileConfig,
@@ -76,6 +119,16 @@ export function loadConfig({ configPath = 'splitship.yml', inputs = {} } = {}) {
     },
     excludeTypes: fileConfig.excludeTypes || DEFAULTS.excludeTypes,
     excludeSubjects: fileConfig.excludeSubjects || DEFAULTS.excludeSubjects,
+    excludePaths: fileConfig.excludePaths || DEFAULTS.excludePaths,
+    polar: {
+      ...DEFAULTS.polar,
+      ...(fileConfig.polar || {}),
+      organizationId:
+        inputs.polarOrganizationId ||
+        process.env.POLAR_ORGANIZATION_ID ||
+        fileConfig.polar?.organizationId ||
+        DEFAULTS.polar.organizationId,
+    },
     llm: {
       ...DEFAULTS.llm,
       ...(fileConfig.llm || {}),
@@ -88,15 +141,10 @@ export function loadConfig({ configPath = 'splitship.yml', inputs = {} } = {}) {
       fileConfig.changelogPath ||
       DEFAULTS.changelogPath,
     writeX,
+    updateRelease,
+    appendChangelog,
+    createPr,
     tag: inputs.tag || fileConfig.tag || null,
-    updateRelease:
-      inputs.updateRelease === true ||
-      inputs.updateRelease === 'true' ||
-      Boolean(fileConfig.updateRelease),
-    appendChangelog:
-      inputs.appendChangelog === true ||
-      inputs.appendChangelog === 'true' ||
-      Boolean(fileConfig.appendChangelog),
     anthropicApiKey:
       inputs.anthropicApiKey ||
       process.env.ANTHROPIC_API_KEY ||

@@ -1,6 +1,6 @@
 {
   "name": "splitship",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "GitHub Action that turns releases into DEV.md, CUSTOMER.md, LINKEDIN.md, and X.md \u2014 Made By Zer01",
   "type": "module",
   "main": "dist/index.js",

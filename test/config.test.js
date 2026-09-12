@@ -22,6 +22,10 @@ describe('loadConfig', () => {
       assert.equal(cfg.llm.provider, 'openai');
       assert.equal(cfg.outputs.dev, 'NOTES.md');
       assert.equal(cfg.outputs.customer, 'CUSTOMER.md');
+      assert.equal(cfg.outputDir, 'splitship-out');
+      assert.equal(cfg.updateRelease, true);
+      assert.equal(cfg.appendChangelog, true);
+      assert.equal(cfg.createPr, false);
     } finally {
       process.chdir(prev);
       rmSync(dir, { recursive: true, force: true });
@@ -35,5 +39,20 @@ describe('loadConfig', () => {
     });
     assert.equal(cfg.llm.provider, 'anthropic');
     assert.equal(cfg.outputDir, './out');
+  });
+
+  it('defaults update-release and append-changelog to true when absent', () => {
+    const cfg = loadConfig({ configPath: 'missing.yml', inputs: {} });
+    assert.equal(cfg.updateRelease, true);
+    assert.equal(cfg.appendChangelog, true);
+  });
+
+  it('respects false inputs for update-release / append-changelog', () => {
+    const cfg = loadConfig({
+      configPath: 'missing.yml',
+      inputs: { updateRelease: 'false', appendChangelog: 'false' },
+    });
+    assert.equal(cfg.updateRelease, false);
+    assert.equal(cfg.appendChangelog, false);
   });
 });

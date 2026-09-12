@@ -8,6 +8,7 @@ import { generateDocuments } from './generate.js';
 import { writeDocuments } from './write.js';
 import { appendChangelog } from './changelog.js';
 import { updateReleaseWithCustomer } from './release.js';
+import { createNotesPullRequest } from './create-pr.js';
 
 /**
  * GitHub Action entrypoint.
@@ -29,18 +30,10 @@ export async function run(deps = {}) {
     const licenseKey =
       getInput('polar-license-key') || process.env.POLAR_LICENSE_KEY || '';
 
-    const license = await validateLicense({
-      licenseKey,
-      skip: skipLicense,
-    });
-
-    if (!license.ok) {
-      setFailed(
-        `SplitShip license check failed (${license.reason}). Set polar-license-key or skip-license: true for CI.`,
-      );
-      return { ok: false, reason: license.reason };
-    }
-    info(`License: ${license.reason}${license.tier ? ` (${license.tier})` : ''}`);
+    const polarOrgInput =
+      getInput('polar-organization-id') ||
+      process.env.POLAR_ORGANIZATION_ID ||
+      '';
 
     const writeXRaw = getInput('write-x');
     const config = loadConfig({
@@ -54,8 +47,26 @@ export async function run(deps = {}) {
         writeX: writeXRaw === '' ? 'true' : writeXRaw,
         updateRelease: getInput('update-release') || undefined,
         appendChangelog: getInput('append-changelog') || undefined,
+        createPr: getInput('create-pr') || undefined,
+        polarOrganizationId: polarOrgInput || undefined,
       },
     });
+
+    const license = await validateLicense({
+      licenseKey,
+      skip: skipLicense,
+      organizationId: polarOrgInput || config.polar?.organizationId,
+      configOrganizationId: config.polar?.organizationId,
+      fetchImpl: deps.fetchImpl,
+    });
+
+    if (!license.ok) {
+      setFailed(
+        `SplitShip license check failed (${license.reason}). Set polar-license-key or skip-license: true for CI.`,
+      );
+      return { ok: false, reason: license.reason };
+    }
+    info(`License: ${license.reason}${license.tier ? ` (${license.tier})` : ''}`);
 
     const token = getInput('github-token') || process.env.GITHUB_TOKEN || '';
     const tag =
@@ -71,10 +82,20 @@ export async function run(deps = {}) {
     let octokit = null;
     let ctx;
     if (deps.fixture) {
-      ctx = await gatherReleaseContext({ fixture: deps.fixture, tag });
+      ctx = await gatherReleaseContext({
+        fixture: deps.fixture,
+        tag,
+        excludePaths: config.excludePaths,
+      });
     } else if (token && owner && repo) {
       octokit = getOctokit(token);
-      ctx = await gatherReleaseContext({ octokit, owner, repo, tag });
+      ctx = await gatherReleaseContext({
+        octokit,
+        owner,
+        repo,
+        tag,
+        excludePaths: config.excludePaths,
+      });
     } else {
       ctx = await gatherReleaseContext({
         fixture: {
@@ -83,6 +104,7 @@ export async function run(deps = {}) {
           owner: owner || 'org',
           commits: [],
         },
+        excludePaths: config.excludePaths,
       });
     }
 
@@ -144,9 +166,36 @@ export async function run(deps = {}) {
       }
     }
 
+    let pullRequest = null;
+    if (config.createPr) {
+      if (!octokit && token && owner && repo) {
+        octokit = getOctokit(token);
+      }
+      if (octokit && owner && repo) {
+        const prPaths = { ...paths };
+        if (changelogPath) prPaths.changelog = changelogPath;
+        pullRequest = await createNotesPullRequest({
+          octokit,
+          owner,
+          repo,
+          tag: ctx.tag,
+          paths: prPaths,
+        });
+        info(
+          pullRequest.created
+            ? `Opened PR: ${pullRequest.url}`
+            : `create-pr skipped: ${pullRequest.reason}`,
+        );
+        if (pullRequest.url) setOutput('pr-url', pullRequest.url);
+      } else {
+        pullRequest = { created: false, reason: 'no_octokit' };
+        info('create-pr skipped: no octokit context');
+      }
+    }
+
     if (license.tier === 'single_use') {
       const marker = writeUsageMarker({
-        outputDir: config.outputDir || '.',
+        outputDir: config.outputDir || 'splitship-out',
         tag: ctx.tag,
       });
       info(`Single-use license marker: ${marker}`);
@@ -159,6 +208,7 @@ export async function run(deps = {}) {
       files,
       changelogPath,
       releaseUpdate,
+      pullRequest,
       license,
     };
   } catch (err) {

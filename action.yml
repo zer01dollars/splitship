@@ -13,6 +13,9 @@ inputs:
   polar-license-key:
     description: 'Polar license key for SplitShip'
     required: false
+  polar-organization-id:
+    description: 'Polar organization UUID (defaults to driftwatch-kit org)'
+    required: false
   skip-license:
     description: 'Skip Polar license check (dev/CI only)'
     required: false
@@ -34,7 +37,7 @@ inputs:
   output-dir:
     description: 'Directory to write generated markdown files'
     required: false
-    default: '.'
+    default: 'splitship-out'
   tag:
     description: 'Release tag to document (defaults to github.ref_name)'
     required: false
@@ -44,15 +47,19 @@ inputs:
   update-release:
     description: 'When true, append/replace CUSTOMER markdown on the published GitHub Release body (<!-- splitship:customer --> markers)'
     required: false
-    default: 'false'
+    default: 'true'
   append-changelog:
     description: 'When true, prepend a Keep-a-Changelog section for the tag into CHANGELOG.md (or config changelogPath)'
     required: false
-    default: 'false'
+    default: 'true'
   write-x:
     description: 'Write X/Twitter draft (X.md). Default true; also written when config outputs.x is set'
     required: false
     default: 'true'
+  create-pr:
+    description: 'When true, open a PR on branch splitship/notes-<tag> with generated files (best-effort)'
+    required: false
+    default: 'false'
 
 outputs:
   dev-path:
@@ -65,6 +72,8 @@ outputs:
     description: 'Path to generated X.md (when write-x or outputs.x)'
   mode:
     description: 'Generation mode used: anthropic | openai | offline'
+  pr-url:
+    description: 'URL of opened PR when create-pr is true'
 
 runs:
   using: 'node20'

@@ -1,7 +1,7 @@
 # SplitShip config — copy to splitship.yml at repo root
 # https://github.com/zer01dollars/splitship
 
-outputDir: .
+outputDir: splitship-out
 
 outputs:
   dev: DEV.md
@@ -11,7 +11,15 @@ outputs:
 
 # writeX: true   # default true — set false to skip X.md unless outputs.x is set
 
+# Defaults on: update GitHub Release body + prepend CHANGELOG.md
+# updateRelease: true
+# appendChangelog: true
+# createPr: false   # when true, open PR on splitship/notes-<tag> instead of committing on main
+
 changelogPath: CHANGELOG.md
+
+# polar:
+#   organizationId: b6303f05-be1c-4b45-b847-5979667a3d12
 
 llm:
   # auto | offline | anthropic | openai
@@ -35,3 +43,7 @@ include:
 # excludeSubjects:
 #   - '^deps:'
 #   - 'bump dependencies'
+# excludePaths:
+#   - package-lock.json
+#   - yarn.lock
+#   - node_modules/

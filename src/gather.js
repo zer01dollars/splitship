@@ -9,6 +9,11 @@
  * @property {string} subject
  * @property {string} [body]
  * @property {string} [author]
+ * @property {string[]} [parents]
+ * @property {string[]} [files]
+ * @property {string} [prTitle]
+ * @property {number} [prNumber]
+ * @property {string} [prUrl]
  */
 
 /**
@@ -50,6 +55,150 @@ export function findBreaking(commits = []) {
 }
 
 /**
+ * True when commit looks like a merge (subject or multiple parents).
+ * @param {CommitInfo} commit
+ * @returns {boolean}
+ */
+export function isMergeCommit(commit = {}) {
+  const subject = commit.subject || '';
+  if (subject.startsWith('Merge ')) return true;
+  if (Array.isArray(commit.parents) && commit.parents.length > 1) return true;
+  return false;
+}
+
+/**
+ * Drop commits that only touch excluded path prefixes.
+ * Best-effort: if a commit has no file list, keep it.
+ * @param {CommitInfo[]} commits
+ * @param {string[]} excludePaths
+ * @returns {CommitInfo[]}
+ */
+export function filterExcludedPaths(commits = [], excludePaths = []) {
+  const prefixes = (excludePaths || [])
+    .map((p) => String(p || '').trim())
+    .filter(Boolean);
+  if (!prefixes.length) return commits;
+
+  return commits.filter((c) => {
+    const files = c.files;
+    if (!Array.isArray(files) || files.length === 0) return true;
+    const onlyExcluded = files.every((f) =>
+      prefixes.some((prefix) => String(f).startsWith(prefix)),
+    );
+    return !onlyExcluded;
+  });
+}
+
+/**
+ * @param {object} c raw commit-ish
+ * @returns {CommitInfo}
+ */
+function normalizeCommit(c = {}) {
+  const message = c.subject || c.message || c.commit?.message || '';
+  const parents =
+    c.parents ||
+    (Array.isArray(c.commit?.parents)
+      ? c.commit.parents.map((p) => p.sha || p)
+      : undefined);
+  return {
+    sha: (c.sha || '0000000').toString().slice(0, 7),
+    subject: subjectFromMessage(message),
+    body:
+      c.body ||
+      String(message).split('\n').slice(1).join('\n').trim() ||
+      '',
+    author:
+      c.author ||
+      c.commit?.author?.name ||
+      c.author?.login ||
+      'unknown',
+    parents: parents
+      ? parents.map((p) => (typeof p === 'string' ? p : p?.sha || String(p)))
+      : undefined,
+    files: Array.isArray(c.files)
+      ? c.files.map((f) => (typeof f === 'string' ? f : f?.filename)).filter(Boolean)
+      : undefined,
+    prTitle: c.prTitle,
+    prNumber: c.prNumber,
+    prUrl: c.prUrl,
+  };
+}
+
+/**
+ * Best-effort: attach associated PR title/number/url to each commit.
+ * @param {import('@actions/github').GitHub} octokit
+ * @param {string} owner
+ * @param {string} repo
+ * @param {CommitInfo[]} commits
+ * @returns {Promise<CommitInfo[]>}
+ */
+export async function enrichWithPullRequests(octokit, owner, repo, commits) {
+  if (!octokit || !owner || !repo) return commits;
+  const out = [];
+  for (const c of commits) {
+    try {
+      const res = await octokit.rest.repos.listPullRequestsAssociatedWithCommit({
+        owner,
+        repo,
+        commit_sha: c.sha,
+      });
+      const pr = res.data?.[0];
+      if (pr) {
+        out.push({
+          ...c,
+          prTitle: pr.title || undefined,
+          prNumber: pr.number,
+          prUrl: pr.html_url || undefined,
+        });
+        continue;
+      }
+    } catch {
+      // best-effort
+    }
+    out.push(c);
+  }
+  return out;
+}
+
+/**
+ * When excludePaths is set, fetch per-commit file lists (best-effort).
+ * @param {import('@actions/github').GitHub} octokit
+ * @param {string} owner
+ * @param {string} repo
+ * @param {CommitInfo[]} commits
+ * @returns {Promise<CommitInfo[]>}
+ */
+async function enrichWithFiles(octokit, owner, repo, commits) {
+  if (!octokit || !owner || !repo) return commits;
+  const out = [];
+  for (const c of commits) {
+    if (Array.isArray(c.files) && c.files.length) {
+      out.push(c);
+      continue;
+    }
+    try {
+      const res = await octokit.rest.repos.getCommit({
+        owner,
+        repo,
+        ref: c.sha,
+      });
+      const files = (res.data.files || [])
+        .map((f) => f.filename)
+        .filter(Boolean);
+      const parents = (res.data.parents || []).map((p) => p.sha);
+      out.push({
+        ...c,
+        files,
+        parents: parents.length ? parents : c.parents,
+      });
+    } catch {
+      out.push(c);
+    }
+  }
+  return out;
+}
+
+/**
  * Gather commits between tags via Octokit, or return fixture as-is.
  * @param {object} options
  * @param {import('@actions/github').GitHub|null} [options.octokit]
@@ -57,6 +206,7 @@ export function findBreaking(commits = []) {
  * @param {string} [options.repo]
  * @param {string} options.tag
  * @param {ReleaseContext} [options.fixture]
+ * @param {string[]} [options.excludePaths]
  * @returns {Promise<ReleaseContext>}
  */
 export async function gatherReleaseContext({
@@ -65,18 +215,18 @@ export async function gatherReleaseContext({
   repo,
   tag,
   fixture = null,
+  excludePaths = [],
 } = {}) {
   if (fixture) {
+    let commits = (fixture.commits || [])
+      .map((c) => normalizeCommit(c))
+      .filter((c) => !isMergeCommit(c));
+    commits = filterExcludedPaths(commits, excludePaths);
     return {
       tag: fixture.tag || tag || 'v0.0.0',
       repo: fixture.repo || repo || 'app',
       owner: fixture.owner || owner || 'org',
-      commits: (fixture.commits || []).map((c) => ({
-        sha: c.sha || '0000000',
-        subject: subjectFromMessage(c.subject || c.message || ''),
-        body: c.body || '',
-        author: c.author || 'unknown',
-      })),
+      commits,
       previousTag: fixture.previousTag || null,
       compareUrl: fixture.compareUrl || null,
     };
@@ -86,7 +236,6 @@ export async function gatherReleaseContext({
     throw new Error('gatherReleaseContext requires octokit+owner+repo+tag or a fixture');
   }
 
-  // Resolve previous tag (best-effort)
   let previousTag = null;
   try {
     const releases = await octokit.rest.repos.listReleases({
@@ -109,12 +258,15 @@ export async function gatherReleaseContext({
         base: previousTag,
         head: tag,
       });
-      commits = (cmp.data.commits || []).map((c) => ({
-        sha: c.sha.slice(0, 7),
-        subject: subjectFromMessage(c.commit?.message || ''),
-        body: (c.commit?.message || '').split('\n').slice(1).join('\n').trim(),
-        author: c.commit?.author?.name || c.author?.login || 'unknown',
-      }));
+      commits = (cmp.data.commits || []).map((c) => {
+        const parents = (c.parents || []).map((p) => p.sha);
+        return normalizeCommit({
+          sha: c.sha,
+          message: c.commit?.message || '',
+          author: c.commit?.author?.name || c.author?.login || 'unknown',
+          parents,
+        });
+      });
     } else {
       const list = await octokit.rest.repos.listCommits({
         owner,
@@ -122,16 +274,28 @@ export async function gatherReleaseContext({
         sha: tag,
         per_page: 30,
       });
-      commits = list.data.map((c) => ({
-        sha: c.sha.slice(0, 7),
-        subject: subjectFromMessage(c.commit?.message || ''),
-        body: (c.commit?.message || '').split('\n').slice(1).join('\n').trim(),
-        author: c.commit?.author?.name || c.author?.login || 'unknown',
-      }));
+      commits = list.data.map((c) => {
+        const parents = (c.parents || []).map((p) => p.sha);
+        return normalizeCommit({
+          sha: c.sha,
+          message: c.commit?.message || '',
+          author: c.commit?.author?.name || c.author?.login || 'unknown',
+          parents,
+        });
+      });
     }
   } catch (err) {
     throw new Error(`Failed to gather commits: ${err.message}`);
   }
+
+  commits = commits.filter((c) => !isMergeCommit(c));
+
+  if ((excludePaths || []).length) {
+    commits = await enrichWithFiles(octokit, owner, repo, commits);
+    commits = filterExcludedPaths(commits, excludePaths);
+  }
+
+  commits = await enrichWithPullRequests(octokit, owner, repo, commits);
 
   return {
     tag,
