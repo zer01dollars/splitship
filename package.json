@@ -1,7 +1,7 @@
 {
   "name": "splitship",
   "version": "0.3.0",
-  "description": "GitHub Action that turns releases into DEV.md, CUSTOMER.md, LINKEDIN.md, and X.md \u2014 Made By Zer01",
+  "description": "GitHub Action that turns releases into DEV.md, CUSTOMER.md, LINKEDIN.md, and X.md — Made By Zer01",
   "type": "module",
   "main": "dist/index.js",
   "engines": {
@@ -25,6 +25,7 @@
   "dependencies": {
     "@actions/core": "^1.11.1",
     "@actions/github": "^6.0.0",
+    "context.dev": "^2.14.0",
     "js-yaml": "^4.1.0"
   },
   "devDependencies": {
