@@ -117,7 +117,7 @@ Set `SKIP_LICENSE=1` or pass `skip-license: true` for unpaid local/CI runs.
 |------|-------|-----|
 | Monthly | **$19/mo** | [Checkout](https://buy.polar.sh/polar_cl_8PwpV5JXH43Zo0Iyvv6BT2lxYCJio8LriNVWE4XASID) |
 | Lifetime | **$149** | [Checkout](https://buy.polar.sh/polar_cl_1y0y6oLUao5mfVDyomZFbJUCcDHCfUOJfy3QY3EHwmv) |
-| Single-use | **$9** | `PENDING_SINGLE_USE` |
+| Single-use | **$9** | [Checkout](https://buy.polar.sh/polar_cl_JDQfXQQqSGJTQwr6OKPiXTiVVKo7dcF9sIo5b1bSK4O) |
 
 Licensed via [Polar](https://polar.sh) (org `driftwatch-kit`). After purchase, store your license key as `POLAR_LICENSE_KEY` in repo secrets.
 
