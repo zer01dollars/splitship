@@ -1,0 +1,25 @@
+# SplitShip config — copy to splitship.yml at repo root
+# https://github.com/zer01dollars/splitship
+
+outputDir: .
+
+outputs:
+  dev: DEV.md
+  customer: CUSTOMER.md
+  linkedin: LINKEDIN.md
+
+llm:
+  # offline | anthropic | openai
+  provider: offline
+  # model: claude-3-5-haiku-latest
+  # model: gpt-4o-mini
+
+tone:
+  dev: technical
+  customer: friendly
+  linkedin: professional
+
+include:
+  breaking: true
+  commits: true
+  authors: true

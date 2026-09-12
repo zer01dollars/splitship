@@ -1,0 +1,35 @@
+{
+  "tag": "v1.2.0",
+  "owner": "acme",
+  "repo": "widgets",
+  "previousTag": "v1.1.0",
+  "compareUrl": "https://github.com/acme/widgets/compare/v1.1.0...v1.2.0",
+  "commits": [
+    {
+      "sha": "a1b2c3d",
+      "subject": "feat(api): add bulk export endpoint",
+      "author": "ada"
+    },
+    {
+      "sha": "e4f5g6h",
+      "subject": "fix: prevent double-charge on retry",
+      "author": "lin"
+    },
+    {
+      "sha": "i7j8k9l",
+      "subject": "feat!: rename webhook payload field id → event_id",
+      "body": "BREAKING CHANGE: clients must update parsers",
+      "author": "ada"
+    },
+    {
+      "sha": "m0n1o2p",
+      "subject": "chore: bump dependencies",
+      "author": "bot"
+    },
+    {
+      "sha": "q3r4s5t",
+      "subject": "docs: document bulk export",
+      "author": "sam"
+    }
+  ]
+}

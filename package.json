@@ -1,0 +1,41 @@
+{
+  "name": "splitship",
+  "version": "0.1.0",
+  "description": "GitHub Action that turns releases into DEV.md, CUSTOMER.md, and LINKEDIN.md — Made By Zer01",
+  "type": "module",
+  "main": "dist/index.js",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "ncc build src/index.js -o dist --license licenses.txt",
+    "test": "node --test test/*.test.js",
+    "local": "node scripts/local-run.js",
+    "prepare": "npm run build"
+  },
+  "keywords": [
+    "github-actions",
+    "release-notes",
+    "changelog",
+    "splitship",
+    "zer01"
+  ],
+  "author": "Zer01",
+  "license": "Apache-2.0",
+  "dependencies": {
+    "@actions/core": "^1.11.1",
+    "@actions/github": "^6.0.0",
+    "js-yaml": "^4.1.0"
+  },
+  "devDependencies": {
+    "@vercel/ncc": "^0.38.3"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/zer01dollars/splitship.git"
+  },
+  "bugs": {
+    "url": "https://github.com/zer01dollars/splitship/issues"
+  },
+  "homepage": "https://github.com/zer01dollars/splitship#readme"
+}
