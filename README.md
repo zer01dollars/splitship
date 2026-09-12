@@ -93,12 +93,12 @@ Set `SKIP_LICENSE=1` or pass `skip-license: true` for unpaid local/CI runs.
 
 ## Pricing
 
-| Plan | Price |
-|------|-------|
-| Monthly | **$19/mo** |
-| Lifetime | **$149** |
+| Plan | Price | Buy |
+|------|-------|-----|
+| Monthly | **$19/mo** | [Checkout](https://buy.polar.sh/polar_cl_8PwpV5JXH43Zo0Iyvv6BT2lxYCJio8LriNVWE4XASID) |
+| Lifetime | **$149** | [Checkout](https://buy.polar.sh/polar_cl_1y0y6oLUao5mfVDyomZFbJUCcDHCfUOJfy3QY3EHwmv) |
 
-Licensed via [Polar](https://polar.sh). Create a license key after purchase and store it as `POLAR_LICENSE_KEY` in repo secrets.
+Licensed via [Polar](https://polar.sh) (org `driftwatch-kit`). After purchase, store your license key as `POLAR_LICENSE_KEY` in repo secrets.
 
 Competitors in this lane (ShipRelay, Changenotes, ShipLogs) typically land at $19–69/mo — SplitShip keeps the workflow inside GitHub Actions with an offline fallback so you are never blocked on an LLM.
 
