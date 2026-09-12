@@ -7,10 +7,16 @@ outputs:
   dev: DEV.md
   customer: CUSTOMER.md
   linkedin: LINKEDIN.md
+  # x: X.md   # optional explicit name; write-x input also controls writing
+
+# writeX: true   # default true — set false to skip X.md unless outputs.x is set
+
+changelogPath: CHANGELOG.md
 
 llm:
-  # offline | anthropic | openai
-  provider: offline
+  # auto | offline | anthropic | openai
+  # auto prefers anthropic when both API keys are present
+  provider: auto
   # model: claude-3-5-haiku-latest
   # model: gpt-4o-mini
 
@@ -23,3 +29,9 @@ include:
   breaking: true
   commits: true
   authors: true
+
+# Filter commits before generate
+# excludeTypes: [chore, ci]
+# excludeSubjects:
+#   - '^deps:'
+#   - 'bump dependencies'

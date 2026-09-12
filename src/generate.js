@@ -1,7 +1,8 @@
 import { findBreaking } from './gather.js';
+import { filterCommits } from './filter.js';
 
 /**
- * Generate DEV.md, CUSTOMER.md, LINKEDIN.md from release context.
+ * Generate DEV.md, CUSTOMER.md, LINKEDIN.md, and X.md from release context.
  * Uses BYOK Anthropic/OpenAI when keys + provider set; otherwise
  * offline deterministic fallback from commit subjects.
  */
@@ -9,14 +10,18 @@ import { findBreaking } from './gather.js';
 /**
  * @param {import('./gather.js').ReleaseContext} ctx
  * @param {object} config
- * @returns {Promise<{ mode: string, files: { dev: string, customer: string, linkedin: string } }>}
+ * @returns {Promise<{ mode: string, files: { dev: string, customer: string, linkedin: string, x: string } }>}
  */
 export async function generateDocuments(ctx, config = {}) {
+  const filteredCtx = {
+    ...ctx,
+    commits: filterCommits(ctx.commits || [], config),
+  };
   const provider = resolveProvider(config);
 
   if (provider === 'anthropic' && config.anthropicApiKey) {
     try {
-      const files = await generateWithAnthropic(ctx, config);
+      const files = await generateWithAnthropic(filteredCtx, config);
       return { mode: 'anthropic', files };
     } catch {
       // fall through to offline
@@ -25,33 +30,54 @@ export async function generateDocuments(ctx, config = {}) {
 
   if (provider === 'openai' && config.openaiApiKey) {
     try {
-      const files = await generateWithOpenAI(ctx, config);
+      const files = await generateWithOpenAI(filteredCtx, config);
       return { mode: 'openai', files };
     } catch {
       // fall through to offline
     }
   }
 
-  return { mode: 'offline', files: generateOffline(ctx, config) };
+  return { mode: 'offline', files: generateOffline(filteredCtx, config) };
 }
 
 /**
+ * Prefer anthropic when provider is unset/auto and both API keys are present.
  * @param {object} config
  * @returns {'anthropic'|'openai'|'offline'}
  */
 export function resolveProvider(config = {}) {
-  const p = (config.llm?.provider || 'offline').toLowerCase();
-  if (p === 'anthropic' && config.anthropicApiKey) return 'anthropic';
-  if (p === 'openai' && config.openaiApiKey) return 'openai';
-  if (p === 'anthropic' || p === 'openai') {
-    // requested but no key → offline
+  const raw = config.llm?.provider;
+  const p = (raw == null || raw === '' ? 'auto' : String(raw)).toLowerCase();
+  const hasAnthropic = Boolean(config.anthropicApiKey);
+  const hasOpenAI = Boolean(config.openaiApiKey);
+
+  if (p === 'offline') return 'offline';
+
+  if (p === 'anthropic') {
+    return hasAnthropic ? 'anthropic' : 'offline';
+  }
+  if (p === 'openai') {
+    return hasOpenAI ? 'openai' : 'offline';
+  }
+
+  // auto / unset: prefer anthropic when both keys present
+  if (p === 'auto' || p === 'unset') {
+    if (hasAnthropic && hasOpenAI) return 'anthropic';
+    if (hasAnthropic) return 'anthropic';
+    if (hasOpenAI) return 'openai';
     return 'offline';
   }
+
+  // unknown provider string with keys → try auto preference
+  if (hasAnthropic && hasOpenAI) return 'anthropic';
+  if (hasAnthropic) return 'anthropic';
+  if (hasOpenAI) return 'openai';
   return 'offline';
 }
 
 /**
  * Deterministic offline generation from commit subjects.
+ * Always includes an X/Twitter draft (≤280 chars).
  * @param {import('./gather.js').ReleaseContext} ctx
  * @param {object} [config]
  */
@@ -139,11 +165,37 @@ ${breaking.length ? `⚠️ Note: this release includes breaking changes — che
 #buildinpublic #shipping #${slug(repo)}
 `;
 
+  const x = buildXPost({ tag, repo, features, fixes, subjects, breaking });
+
   return {
     dev: dev.trim() + '\n',
     customer: customer.trim() + '\n',
     linkedin: linkedin.trim() + '\n',
+    x: x.trim() + '\n',
   };
+}
+
+/**
+ * Short ≤280 char X/Twitter draft.
+ */
+export function buildXPost({
+  tag,
+  repo,
+  features = [],
+  fixes = [],
+  subjects = [],
+  breaking = [],
+} = {}) {
+  const highlight = humanizeSubject(
+    features[0] || fixes[0] || subjects[0] || 'improvements',
+  );
+  let post = `🚢 ${tag} of ${repo} is out — ${highlight}`;
+  if (breaking.length) post += ' (breaking changes)';
+  post += '. #shipping';
+  if (post.length > 280) {
+    post = post.slice(0, 277) + '...';
+  }
+  return post;
 }
 
 /**
@@ -208,7 +260,7 @@ function buildPrompt(ctx) {
   const commits = (ctx.commits || [])
     .map((c) => `- ${c.sha} ${c.subject}${c.author ? ` (${c.author})` : ''}`)
     .join('\n');
-  return `You are SplitShip. Produce three markdown documents for release ${ctx.tag} of ${ctx.repo}.
+  return `You are SplitShip. Produce four documents for release ${ctx.tag} of ${ctx.repo}.
 
 Return EXACTLY this structure (no extra commentary):
 
@@ -218,6 +270,8 @@ Return EXACTLY this structure (no extra commentary):
 ...customer-facing what's new...
 <<<LINKEDIN>>>
 ...short LinkedIn post...
+<<<X>>>
+...X/Twitter post ≤280 characters...
 
 Commits:
 ${commits || '(none)'}
@@ -230,15 +284,19 @@ function parseLlmDocuments(text, ctx, config) {
     const m = text.match(re);
     return m ? m[1].trim() : '';
   };
-  const dev = extract('DEV');
-  const customer = extract('CUSTOMER');
-  const linkedin = extract('LINKEDIN');
-  if (!dev || !customer || !linkedin) {
-    return generateOffline(ctx, config);
+  const offline = generateOffline(ctx, config);
+  const dev = extract('DEV') || offline.dev.trim();
+  const customer = extract('CUSTOMER') || offline.customer.trim();
+  const linkedin = extract('LINKEDIN') || offline.linkedin.trim();
+  let x = extract('X') || offline.x.trim();
+  if (x.length > 280) x = x.slice(0, 277) + '...';
+  if (!extract('DEV') || !extract('CUSTOMER') || !extract('LINKEDIN')) {
+    return offline;
   }
   return {
     dev: dev.endsWith('\n') ? dev : dev + '\n',
     customer: customer.endsWith('\n') ? customer : customer + '\n',
     linkedin: linkedin.endsWith('\n') ? linkedin : linkedin + '\n',
+    x: x.endsWith('\n') ? x : x + '\n',
   };
 }

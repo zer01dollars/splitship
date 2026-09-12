@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
  * Local SplitShip run — reads fixtures/release.json and writes
- * DEV.md, CUSTOMER.md, LINKEDIN.md under ./out (or SPLITSHIP_OUT).
+ * DEV.md, CUSTOMER.md, LINKEDIN.md, X.md under ./out (or SPLITSHIP_OUT).
  */
 import { readFileSync, mkdirSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
@@ -27,10 +27,12 @@ async function main() {
       llmProvider: process.env.SPLITSHIP_LLM_PROVIDER || 'offline',
       anthropicApiKey: process.env.ANTHROPIC_API_KEY,
       openaiApiKey: process.env.OPENAI_API_KEY,
+      writeX: 'true',
     },
   });
   // force output dir (loadConfig resolves relative to cwd)
   config.outputDir = outDir;
+  config.writeX = true;
 
   const { mode, files } = await generateDocuments(ctx, config);
   mkdirSync(outDir, { recursive: true });
@@ -40,6 +42,7 @@ async function main() {
   console.log(`  ${paths.dev}`);
   console.log(`  ${paths.customer}`);
   console.log(`  ${paths.linkedin}`);
+  if (paths.x) console.log(`  ${paths.x}`);
 }
 
 main().catch((err) => {

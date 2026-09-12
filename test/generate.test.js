@@ -5,6 +5,7 @@ import {
   generateDocuments,
   humanizeSubject,
   resolveProvider,
+  buildXPost,
 } from '../src/generate.js';
 
 const fixtureCtx = {
@@ -16,6 +17,7 @@ const fixtureCtx = {
     { sha: 'a1b2c3d', subject: 'feat(api): add bulk export endpoint', author: 'ada' },
     { sha: 'e4f5g6h', subject: 'fix: prevent double-charge on retry', author: 'lin' },
     { sha: 'i7j8k9l', subject: 'feat!: rename webhook payload field', author: 'ada' },
+    { sha: 'm0n1o2p', subject: 'chore: bump dependencies', author: 'bot' },
   ],
 };
 
@@ -34,6 +36,32 @@ describe('resolveProvider', () => {
       'openai',
     );
   });
+
+  it('auto prefers anthropic when both keys present', () => {
+    assert.equal(
+      resolveProvider({
+        llm: { provider: 'auto' },
+        anthropicApiKey: 'ak',
+        openaiApiKey: 'ok',
+      }),
+      'anthropic',
+    );
+    assert.equal(
+      resolveProvider({
+        llm: { provider: undefined },
+        anthropicApiKey: 'ak',
+        openaiApiKey: 'ok',
+      }),
+      'anthropic',
+    );
+  });
+
+  it('auto picks the only available key', () => {
+    assert.equal(
+      resolveProvider({ llm: { provider: 'auto' }, openaiApiKey: 'ok' }),
+      'openai',
+    );
+  });
 });
 
 describe('generateOffline', () => {
@@ -47,6 +75,36 @@ describe('generateOffline', () => {
     assert.match(files.linkedin, /v1\.2\.0/);
     assert.match(files.linkedin, /#buildinpublic/);
   });
+
+  it('always includes an X draft ≤280 chars', () => {
+    const files = generateOffline(fixtureCtx);
+    assert.ok(files.x);
+    assert.ok(files.x.trim().length <= 280);
+    assert.match(files.x, /v1\.2\.0/);
+  });
+
+  it('respects excludeTypes / excludeSubjects', async () => {
+    const { files } = await generateDocuments(fixtureCtx, {
+      llm: { provider: 'offline' },
+      excludeTypes: ['chore'],
+      excludeSubjects: ['rename webhook'],
+    });
+    assert.doesNotMatch(files.dev, /chore: bump/);
+    assert.doesNotMatch(files.dev, /rename webhook/);
+    assert.match(files.dev, /bulk export/);
+  });
+});
+
+describe('buildXPost', () => {
+  it('stays within 280 characters', () => {
+    const long = 'x'.repeat(400);
+    const post = buildXPost({
+      tag: 'v9.9.9',
+      repo: 'r',
+      subjects: [long],
+    });
+    assert.ok(post.length <= 280);
+  });
 });
 
 describe('generateDocuments', () => {
@@ -55,6 +113,6 @@ describe('generateDocuments', () => {
       llm: { provider: 'offline' },
     });
     assert.equal(mode, 'offline');
-    assert.ok(files.dev && files.customer && files.linkedin);
+    assert.ok(files.dev && files.customer && files.linkedin && files.x);
   });
 });

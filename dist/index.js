@@ -34798,10 +34798,13 @@ const DEFAULTS = {
     dev: 'DEV.md',
     customer: 'CUSTOMER.md',
     linkedin: 'LINKEDIN.md',
+    // x omitted by default; write-x input / outputs.x enables X.md
   },
   outputDir: '.',
+  changelogPath: 'CHANGELOG.md',
+  writeX: true,
   llm: {
-    provider: 'offline',
+    provider: 'auto',
     model: null,
   },
   tone: {
@@ -34814,13 +34817,15 @@ const DEFAULTS = {
     commits: true,
     authors: true,
   },
+  excludeTypes: [],
+  excludeSubjects: [],
 };
 
 /**
  * Load SplitShip config from YAML file + action inputs / env overrides.
  * @param {object} options
  * @param {string} [options.configPath]
- * @param {Record<string, string|undefined>} [options.inputs]
+ * @param {Record<string, string|undefined|boolean>} [options.inputs]
  * @returns {object}
  */
 function loadConfig({ configPath = 'splitship.yml', inputs = {} } = {}) {
@@ -34838,6 +34843,13 @@ function loadConfig({ configPath = 'splitship.yml', inputs = {} } = {}) {
     process.env.SPLITSHIP_LLM_PROVIDER ||
     DEFAULTS.llm.provider;
 
+  const writeX =
+    inputs.writeX !== undefined && inputs.writeX !== ''
+      ? inputs.writeX === true || inputs.writeX === 'true'
+      : fileConfig.writeX !== undefined
+        ? Boolean(fileConfig.writeX)
+        : DEFAULTS.writeX;
+
   return {
     ...DEFAULTS,
     ...fileConfig,
@@ -34853,6 +34865,8 @@ function loadConfig({ configPath = 'splitship.yml', inputs = {} } = {}) {
       ...DEFAULTS.include,
       ...(fileConfig.include || {}),
     },
+    excludeTypes: fileConfig.excludeTypes || DEFAULTS.excludeTypes,
+    excludeSubjects: fileConfig.excludeSubjects || DEFAULTS.excludeSubjects,
     llm: {
       ...DEFAULTS.llm,
       ...(fileConfig.llm || {}),
@@ -34860,7 +34874,20 @@ function loadConfig({ configPath = 'splitship.yml', inputs = {} } = {}) {
       model: inputs.model || fileConfig.llm?.model || DEFAULTS.llm.model,
     },
     outputDir: inputs.outputDir || fileConfig.outputDir || DEFAULTS.outputDir,
+    changelogPath:
+      inputs.changelogPath ||
+      fileConfig.changelogPath ||
+      DEFAULTS.changelogPath,
+    writeX,
     tag: inputs.tag || fileConfig.tag || null,
+    updateRelease:
+      inputs.updateRelease === true ||
+      inputs.updateRelease === 'true' ||
+      Boolean(fileConfig.updateRelease),
+    appendChangelog:
+      inputs.appendChangelog === true ||
+      inputs.appendChangelog === 'true' ||
+      Boolean(fileConfig.appendChangelog),
     anthropicApiKey:
       inputs.anthropicApiKey ||
       process.env.ANTHROPIC_API_KEY ||
@@ -34877,17 +34904,23 @@ function loadConfig({ configPath = 'splitship.yml', inputs = {} } = {}) {
  * Polar license validation stub.
  * Real Polar product checkout remains manual; this checks key presence
  * and respects SKIP_LICENSE / skip-license for CI and local runs.
+ *
+ * Single-use tier: key prefix SPLITSHIP-1X or env SPLITSHIP_LICENSE_TIER=single
+ * → tier: 'single_use' (caller may write .splitship-usage.json audit marker).
  */
+
+
+
 
 /**
  * @param {object} options
  * @param {string} [options.licenseKey]
  * @param {boolean} [options.skip]
- * @returns {Promise<{ ok: boolean, reason: string }>}
+ * @returns {Promise<{ ok: boolean, reason: string, tier?: string }>}
  */
 async function validateLicense({ licenseKey, skip = false } = {}) {
   if (skip || process.env.SKIP_LICENSE === '1' || process.env.SKIP_LICENSE === 'true') {
-    return { ok: true, reason: 'skipped' };
+    return { ok: true, reason: 'skipped', tier: detectTier(licenseKey) };
   }
 
   if (!licenseKey || !String(licenseKey).trim()) {
@@ -34904,7 +34937,48 @@ async function validateLicense({ licenseKey, skip = false } = {}) {
     return { ok: false, reason: 'invalid_license_key' };
   }
 
-  return { ok: true, reason: 'stub_accepted' };
+  const tier = detectTier(key);
+  return { ok: true, reason: 'stub_accepted', tier };
+}
+
+/**
+ * @param {string} [licenseKey]
+ * @returns {string|undefined}
+ */
+function detectTier(licenseKey = '') {
+  const key = String(licenseKey || '').trim();
+  if (
+    key.startsWith('SPLITSHIP-1X') ||
+    process.env.SPLITSHIP_LICENSE_TIER === 'single'
+  ) {
+    return 'single_use';
+  }
+  return undefined;
+}
+
+/**
+ * Write single-use audit marker under outputDir.
+ * @param {object} options
+ * @param {string} options.outputDir
+ * @param {string} [options.tag]
+ * @param {string} [options.cwd]
+ * @returns {string} path written
+ */
+function writeUsageMarker({
+  outputDir = '.',
+  tag = '',
+  cwd = process.cwd(),
+} = {}) {
+  const dir = (0,external_node_path_namespaceObject.resolve)(cwd, outputDir);
+  (0,external_node_fs_namespaceObject.mkdirSync)(dir, { recursive: true });
+  const path = (0,external_node_path_namespaceObject.join)(dir, '.splitship-usage.json');
+  const payload = {
+    tier: 'single_use',
+    tag: tag || null,
+    usedAt: new Date().toISOString(),
+  };
+  (0,external_node_fs_namespaceObject.writeFileSync)(path, JSON.stringify(payload, null, 2) + '\n', 'utf8');
+  return path;
 }
 
 ;// CONCATENATED MODULE: ./src/gather.js
@@ -35055,11 +35129,61 @@ async function gatherReleaseContext({
   };
 }
 
+;// CONCATENATED MODULE: ./src/filter.js
+/**
+ * Filter commits by conventional type and/or subject regex before generate.
+ */
+
+/**
+ * Extract conventional-commit type from subject (e.g. feat, fix, chore).
+ * @param {string} subject
+ * @returns {string|null}
+ */
+function conventionalType(subject = '') {
+  const m = String(subject).match(/^([a-zA-Z]+)(\(.+\))?[!]?:/);
+  return m ? m[1].toLowerCase() : null;
+}
+
+/**
+ * @param {import('./gather.js').CommitInfo[]} commits
+ * @param {object} [config]
+ * @param {string[]} [config.excludeTypes] e.g. ['chore','ci']
+ * @param {string[]} [config.excludeSubjects] regex strings matched against subject
+ * @returns {import('./gather.js').CommitInfo[]}
+ */
+function filterCommits(commits = [], config = {}) {
+  const excludeTypes = (config.excludeTypes || []).map((t) =>
+    String(t).toLowerCase(),
+  );
+  const excludeSubjects = (config.excludeSubjects || [])
+    .map((p) => {
+      try {
+        return new RegExp(p, 'i');
+      } catch {
+        return null;
+      }
+    })
+    .filter(Boolean);
+
+  if (!excludeTypes.length && !excludeSubjects.length) {
+    return commits;
+  }
+
+  return commits.filter((c) => {
+    const subject = c.subject || '';
+    const type = conventionalType(subject);
+    if (type && excludeTypes.includes(type)) return false;
+    if (excludeSubjects.some((re) => re.test(subject))) return false;
+    return true;
+  });
+}
+
 ;// CONCATENATED MODULE: ./src/generate.js
 
 
+
 /**
- * Generate DEV.md, CUSTOMER.md, LINKEDIN.md from release context.
+ * Generate DEV.md, CUSTOMER.md, LINKEDIN.md, and X.md from release context.
  * Uses BYOK Anthropic/OpenAI when keys + provider set; otherwise
  * offline deterministic fallback from commit subjects.
  */
@@ -35067,14 +35191,18 @@ async function gatherReleaseContext({
 /**
  * @param {import('./gather.js').ReleaseContext} ctx
  * @param {object} config
- * @returns {Promise<{ mode: string, files: { dev: string, customer: string, linkedin: string } }>}
+ * @returns {Promise<{ mode: string, files: { dev: string, customer: string, linkedin: string, x: string } }>}
  */
 async function generateDocuments(ctx, config = {}) {
+  const filteredCtx = {
+    ...ctx,
+    commits: filterCommits(ctx.commits || [], config),
+  };
   const provider = resolveProvider(config);
 
   if (provider === 'anthropic' && config.anthropicApiKey) {
     try {
-      const files = await generateWithAnthropic(ctx, config);
+      const files = await generateWithAnthropic(filteredCtx, config);
       return { mode: 'anthropic', files };
     } catch {
       // fall through to offline
@@ -35083,33 +35211,54 @@ async function generateDocuments(ctx, config = {}) {
 
   if (provider === 'openai' && config.openaiApiKey) {
     try {
-      const files = await generateWithOpenAI(ctx, config);
+      const files = await generateWithOpenAI(filteredCtx, config);
       return { mode: 'openai', files };
     } catch {
       // fall through to offline
     }
   }
 
-  return { mode: 'offline', files: generateOffline(ctx, config) };
+  return { mode: 'offline', files: generateOffline(filteredCtx, config) };
 }
 
 /**
+ * Prefer anthropic when provider is unset/auto and both API keys are present.
  * @param {object} config
  * @returns {'anthropic'|'openai'|'offline'}
  */
 function resolveProvider(config = {}) {
-  const p = (config.llm?.provider || 'offline').toLowerCase();
-  if (p === 'anthropic' && config.anthropicApiKey) return 'anthropic';
-  if (p === 'openai' && config.openaiApiKey) return 'openai';
-  if (p === 'anthropic' || p === 'openai') {
-    // requested but no key → offline
+  const raw = config.llm?.provider;
+  const p = (raw == null || raw === '' ? 'auto' : String(raw)).toLowerCase();
+  const hasAnthropic = Boolean(config.anthropicApiKey);
+  const hasOpenAI = Boolean(config.openaiApiKey);
+
+  if (p === 'offline') return 'offline';
+
+  if (p === 'anthropic') {
+    return hasAnthropic ? 'anthropic' : 'offline';
+  }
+  if (p === 'openai') {
+    return hasOpenAI ? 'openai' : 'offline';
+  }
+
+  // auto / unset: prefer anthropic when both keys present
+  if (p === 'auto' || p === 'unset') {
+    if (hasAnthropic && hasOpenAI) return 'anthropic';
+    if (hasAnthropic) return 'anthropic';
+    if (hasOpenAI) return 'openai';
     return 'offline';
   }
+
+  // unknown provider string with keys → try auto preference
+  if (hasAnthropic && hasOpenAI) return 'anthropic';
+  if (hasAnthropic) return 'anthropic';
+  if (hasOpenAI) return 'openai';
   return 'offline';
 }
 
 /**
  * Deterministic offline generation from commit subjects.
+ * Always includes an X/Twitter draft (≤280 chars).
  * @param {import('./gather.js').ReleaseContext} ctx
  * @param {object} [config]
  */
@@ -35197,11 +35346,37 @@ ${breaking.length ? `⚠️ Note: this release includes breaking changes — che
 #buildinpublic #shipping #${slug(repo)}
 `;
 
+  const x = buildXPost({ tag, repo, features, fixes, subjects, breaking });
+
   return {
     dev: dev.trim() + '\n',
     customer: customer.trim() + '\n',
     linkedin: linkedin.trim() + '\n',
+    x: x.trim() + '\n',
   };
+}
+
+/**
+ * Short ≤280 char X/Twitter draft.
+ */
+function buildXPost({
+  tag,
+  repo,
+  features = [],
+  fixes = [],
+  subjects = [],
+  breaking = [],
+} = {}) {
+  const highlight = humanizeSubject(
+    features[0] || fixes[0] || subjects[0] || 'improvements',
+  );
+  let post = `🚢 ${tag} of ${repo} is out — ${highlight}`;
+  if (breaking.length) post += ' (breaking changes)';
+  post += '. #shipping';
+  if (post.length > 280) {
+    post = post.slice(0, 277) + '...';
+  }
+  return post;
 }
 
 /**
@@ -35266,7 +35441,7 @@ function buildPrompt(ctx) {
   const commits = (ctx.commits || [])
     .map((c) => `- ${c.sha} ${c.subject}${c.author ? ` (${c.author})` : ''}`)
     .join('\n');
-  return `You are SplitShip. Produce three markdown documents for release ${ctx.tag} of ${ctx.repo}.
+  return `You are SplitShip. Produce four documents for release ${ctx.tag} of ${ctx.repo}.
 
 Return EXACTLY this structure (no extra commentary):
 
@@ -35276,6 +35451,8 @@ Return EXACTLY this structure (no extra commentary):
 ...customer-facing what's new...
 <<<LINKEDIN>>>
 ...short LinkedIn post...
+<<<X>>>
+...X/Twitter post ≤280 characters...
 
 Commits:
 ${commits || '(none)'}
@@ -35288,16 +35465,20 @@ function parseLlmDocuments(text, ctx, config) {
     const m = text.match(re);
     return m ? m[1].trim() : '';
   };
-  const dev = extract('DEV');
-  const customer = extract('CUSTOMER');
-  const linkedin = extract('LINKEDIN');
-  if (!dev || !customer || !linkedin) {
-    return generateOffline(ctx, config);
+  const offline = generateOffline(ctx, config);
+  const dev = extract('DEV') || offline.dev.trim();
+  const customer = extract('CUSTOMER') || offline.customer.trim();
+  const linkedin = extract('LINKEDIN') || offline.linkedin.trim();
+  let x = extract('X') || offline.x.trim();
+  if (x.length > 280) x = x.slice(0, 277) + '...';
+  if (!extract('DEV') || !extract('CUSTOMER') || !extract('LINKEDIN')) {
+    return offline;
   }
   return {
     dev: dev.endsWith('\n') ? dev : dev + '\n',
     customer: customer.endsWith('\n') ? customer : customer + '\n',
     linkedin: linkedin.endsWith('\n') ? linkedin : linkedin + '\n',
+    x: x.endsWith('\n') ? x : x + '\n',
   };
 }
 
@@ -35307,11 +35488,13 @@ function parseLlmDocuments(text, ctx, config) {
 
 /**
  * Write generated documents to disk.
+ * Always writes DEV/CUSTOMER/LINKEDIN. Writes X when files.x is present and
+ * (config.outputs.x is set OR config.writeX !== false).
  * @param {object} options
- * @param {{ dev: string, customer: string, linkedin: string }} options.files
+ * @param {{ dev: string, customer: string, linkedin: string, x?: string }} options.files
  * @param {object} options.config
  * @param {string} [options.cwd]
- * @returns {{ dev: string, customer: string, linkedin: string }} absolute paths
+ * @returns {{ dev: string, customer: string, linkedin: string, x?: string }} absolute paths
  */
 function writeDocuments({ files, config, cwd = process.cwd() } = {}) {
   if (!files) throw new Error('writeDocuments: files required');
@@ -35323,6 +35506,7 @@ function writeDocuments({ files, config, cwd = process.cwd() } = {}) {
     dev: config.outputs?.dev || 'DEV.md',
     customer: config.outputs?.customer || 'CUSTOMER.md',
     linkedin: config.outputs?.linkedin || 'LINKEDIN.md',
+    x: config.outputs?.x || 'X.md',
   };
 
   const paths = {};
@@ -35332,10 +35516,221 @@ function writeDocuments({ files, config, cwd = process.cwd() } = {}) {
     (0,external_node_fs_namespaceObject.writeFileSync)(target, files[key], 'utf8');
     paths[key] = target;
   }
+
+  const shouldWriteX =
+    files.x != null &&
+    (Boolean(config.outputs?.x) || config.writeX !== false);
+
+  if (shouldWriteX) {
+    const target = (0,external_node_path_namespaceObject.join)(outDir, names.x);
+    (0,external_node_fs_namespaceObject.mkdirSync)((0,external_node_path_namespaceObject.dirname)(target), { recursive: true });
+    (0,external_node_fs_namespaceObject.writeFileSync)(target, files.x, 'utf8');
+    paths.x = target;
+  }
+
   return paths;
 }
 
+;// CONCATENATED MODULE: ./src/changelog.js
+
+
+
+/**
+ * Build a Keep-a-Changelog-style section from offline/DEV content.
+ * @param {object} options
+ * @param {string} options.tag
+ * @param {{ dev?: string, customer?: string }} options.files
+ * @param {import('./gather.js').ReleaseContext} [options.ctx]
+ * @param {string} [options.date] ISO date YYYY-MM-DD
+ * @returns {string}
+ */
+function buildChangelogSection({ tag, files = {}, ctx = null, date } = {}) {
+  const day =
+    date ||
+    new Date().toISOString().slice(0, 10);
+  const subjects = (ctx?.commits || []).map((c) => c.subject).filter(Boolean);
+  const features = subjects.filter((s) =>
+    /^(feat|feature)(\(.+\))?[!]?:/i.test(s),
+  );
+  const fixes = subjects.filter((s) => /^(fix)(\(.+\))?[!]?:/i.test(s));
+
+  // Prefer structured lists from commits; fall back to a short DEV summary line
+  const added =
+    features.length > 0
+      ? features.map((s) => `- ${s}`)
+      : extractBullets(files.dev, 'Features');
+  const fixed =
+    fixes.length > 0
+      ? fixes.map((s) => `- ${s}`)
+      : extractBullets(files.dev, 'Fixes');
+
+  const lines = [`## [${tag}] — ${day}`, ''];
+  if (added.length) {
+    lines.push('### Added', ...added, '');
+  }
+  if (fixed.length) {
+    lines.push('### Fixed', ...fixed, '');
+  }
+  if (!added.length && !fixed.length) {
+    const summary =
+      firstSummaryLine(files.dev) ||
+      `- Release ${tag}`;
+    lines.push('### Changed', `- ${summary.replace(/^[-*]\s*/, '')}`, '');
+  }
+  return lines.join('\n').trimEnd() + '\n';
+}
+
+function extractBullets(md = '', heading = '') {
+  if (!md) return [];
+  const re = new RegExp(
+    `## ${heading}\\s*\\n([\\s\\S]*?)(?=\\n## |$)`,
+    'i',
+  );
+  const m = md.match(re);
+  if (!m) return [];
+  return m[1]
+    .split('\n')
+    .map((l) => l.trim())
+    .filter((l) => l.startsWith('- ') && !/^-\s*_None/i.test(l));
+}
+
+function firstSummaryLine(md = '') {
+  const m = md.match(/## Summary\s*\n+([^\n]+)/i);
+  return m ? m[1].trim() : '';
+}
+
+/**
+ * Prepend a changelog section into CHANGELOG.md (or config.changelogPath).
+ * Creates the file with a Keep-a-Changelog header if missing.
+ * @param {object} options
+ * @param {string} options.tag
+ * @param {{ dev?: string, customer?: string }} options.files
+ * @param {object} options.config
+ * @param {import('./gather.js').ReleaseContext} [options.ctx]
+ * @param {string} [options.cwd]
+ * @returns {string} absolute path written
+ */
+function appendChangelog({
+  tag,
+  files,
+  config = {},
+  ctx = null,
+  cwd = process.cwd(),
+} = {}) {
+  const rel = config.changelogPath || 'CHANGELOG.md';
+  // Spec: CHANGELOG.md at cwd (or config.changelogPath), not under outputDir.
+  const target = (0,external_node_path_namespaceObject.resolve)(cwd, rel);
+
+  const section = buildChangelogSection({ tag, files, ctx });
+  let body = '';
+  if ((0,external_node_fs_namespaceObject.existsSync)(target)) {
+    body = (0,external_node_fs_namespaceObject.readFileSync)(target, 'utf8');
+  } else {
+    body =
+      '# Changelog\n\nAll notable changes to this project will be documented in this file.\n\n';
+  }
+
+  // Insert after header block: find first ## [ or end of intro
+  const inserted = insertSection(body, section, tag);
+  (0,external_node_fs_namespaceObject.mkdirSync)((0,external_node_path_namespaceObject.dirname)(target), { recursive: true });
+  (0,external_node_fs_namespaceObject.writeFileSync)(target, inserted, 'utf8');
+  return target;
+}
+
+/**
+ * Replace existing section for the same tag, or prepend after title.
+ */
+function insertSection(body, section, tag) {
+  const tagEsc = String(tag).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const sectionRe = new RegExp(
+    `## \\[${tagEsc}\\][^\\n]*\\n[\\s\\S]*?(?=\\n## \\[|$)`,
+  );
+  if (sectionRe.test(body)) {
+    return body.replace(sectionRe, section.trimEnd() + '\n\n').replace(/\n{3,}/g, '\n\n');
+  }
+
+  // After first H1 + optional intro paragraphs, before first ## [
+  const firstRelease = body.search(/\n## \[/);
+  if (firstRelease !== -1) {
+    return (
+      body.slice(0, firstRelease + 1) +
+      section.trimEnd() +
+      '\n\n' +
+      body.slice(firstRelease + 1)
+    );
+  }
+  return body.trimEnd() + '\n\n' + section;
+}
+
+;// CONCATENATED MODULE: ./src/release.js
+/**
+ * Update a published GitHub Release body with CUSTOMER markdown,
+ * wrapped in <!-- splitship:customer --> markers so re-runs replace the section.
+ */
+
+const CUSTOMER_START = '<!-- splitship:customer -->';
+const CUSTOMER_END = '<!-- /splitship:customer -->';
+
+/**
+ * Merge CUSTOMER markdown into an existing release body.
+ * @param {string} existingBody
+ * @param {string} customerMd
+ * @returns {string}
+ */
+function mergeCustomerIntoReleaseBody(existingBody = '', customerMd = '') {
+  const block = `${CUSTOMER_START}\n${String(customerMd).trim()}\n${CUSTOMER_END}`;
+  const re = /<!--\s*splitship:customer\s*-->[\s\S]*?<!--\s*\/splitship:customer\s*-->/;
+  const body = String(existingBody || '');
+  if (re.test(body)) {
+    return body.replace(re, block);
+  }
+  if (!body.trim()) return block + '\n';
+  return body.trimEnd() + '\n\n' + block + '\n';
+}
+
+/**
+ * Find release by tag and update its body with CUSTOMER content.
+ * @param {object} options
+ * @param {*} options.octokit
+ * @param {string} options.owner
+ * @param {string} options.repo
+ * @param {string} options.tag
+ * @param {string} options.customerMd
+ * @returns {Promise<{ updated: boolean, releaseId?: number, reason?: string }>}
+ */
+async function updateReleaseWithCustomer({
+  octokit,
+  owner,
+  repo,
+  tag,
+  customerMd,
+} = {}) {
+  if (!octokit || !owner || !repo || !tag) {
+    return { updated: false, reason: 'missing_octokit_or_tag' };
+  }
+
+  let release;
+  try {
+    const res = await octokit.rest.repos.getReleaseByTag({ owner, repo, tag });
+    release = res.data;
+  } catch (err) {
+    return { updated: false, reason: `release_not_found:${err.message}` };
+  }
+
+  const newBody = mergeCustomerIntoReleaseBody(release.body || '', customerMd);
+  await octokit.rest.repos.updateRelease({
+    owner,
+    repo,
+    release_id: release.id,
+    body: newBody,
+  });
+  return { updated: true, releaseId: release.id };
+}
+
 ;// CONCATENATED MODULE: ./src/index.js
+
+
+
 
 
 
@@ -35375,8 +35770,9 @@ async function run(deps = {}) {
       );
       return { ok: false, reason: license.reason };
     }
-    info(`License: ${license.reason}`);
+    info(`License: ${license.reason}${license.tier ? ` (${license.tier})` : ''}`);
 
+    const writeXRaw = getInput('write-x');
     const config = loadConfig({
       configPath: getInput('config-path') || 'splitship.yml',
       inputs: {
@@ -35385,6 +35781,9 @@ async function run(deps = {}) {
         tag: getInput('tag') || undefined,
         anthropicApiKey: getInput('anthropic-api-key') || undefined,
         openaiApiKey: getInput('openai-api-key') || undefined,
+        writeX: writeXRaw === '' ? 'true' : writeXRaw,
+        updateRelease: getInput('update-release') || undefined,
+        appendChangelog: getInput('append-changelog') || undefined,
       },
     });
 
@@ -35399,11 +35798,12 @@ async function run(deps = {}) {
     const owner = context.repo?.owner;
     const repo = context.repo?.repo;
 
+    let octokit = null;
     let ctx;
     if (deps.fixture) {
       ctx = await gatherReleaseContext({ fixture: deps.fixture, tag });
     } else if (token && owner && repo) {
-      const octokit = getOctokit(token);
+      octokit = getOctokit(token);
       ctx = await gatherReleaseContext({ octokit, owner, repo, tag });
     } else {
       ctx = await gatherReleaseContext({
@@ -35425,12 +35825,72 @@ async function run(deps = {}) {
     setOutput('customer-path', paths.customer);
     setOutput('linkedin-path', paths.linkedin);
     setOutput('mode', mode);
+    if (paths.x) {
+      setOutput('x-path', paths.x);
+      info(`Wrote ${paths.x}`);
+    }
 
     info(`Wrote ${paths.dev}`);
     info(`Wrote ${paths.customer}`);
     info(`Wrote ${paths.linkedin}`);
 
-    return { ok: true, mode, paths, files };
+    const filteredCtx = {
+      ...ctx,
+      commits: filterCommits(ctx.commits || [], config),
+    };
+
+    let changelogPath = null;
+    if (config.appendChangelog) {
+      changelogPath = appendChangelog({
+        tag: ctx.tag,
+        files,
+        config,
+        ctx: filteredCtx,
+      });
+      info(`Appended changelog: ${changelogPath}`);
+    }
+
+    let releaseUpdate = null;
+    if (config.updateRelease) {
+      if (!octokit && token && owner && repo) {
+        octokit = getOctokit(token);
+      }
+      if (octokit && owner && repo) {
+        releaseUpdate = await updateReleaseWithCustomer({
+          octokit,
+          owner,
+          repo,
+          tag: ctx.tag,
+          customerMd: files.customer,
+        });
+        info(
+          releaseUpdate.updated
+            ? `Updated GitHub Release body for ${ctx.tag}`
+            : `Release update skipped: ${releaseUpdate.reason}`,
+        );
+      } else {
+        info('Release update skipped: no octokit context');
+        releaseUpdate = { updated: false, reason: 'no_octokit' };
+      }
+    }
+
+    if (license.tier === 'single_use') {
+      const marker = writeUsageMarker({
+        outputDir: config.outputDir || '.',
+        tag: ctx.tag,
+      });
+      info(`Single-use license marker: ${marker}`);
+    }
+
+    return {
+      ok: true,
+      mode,
+      paths,
+      files,
+      changelogPath,
+      releaseUpdate,
+      license,
+    };
   } catch (err) {
     setFailed(err.message || String(err));
     return { ok: false, error: err };

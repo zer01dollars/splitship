@@ -7,3 +7,4 @@ out/
 !.env.example
 coverage/
 .nyc_output/
+.splitship-usage.json

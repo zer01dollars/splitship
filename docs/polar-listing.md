@@ -16,3 +16,8 @@ Org: `driftwatch-kit`
 
 Made By Zer01
 Artificially Intelligent, Digitally Enhanced.
+
+## SplitShip Single-use — $9
+
+- Checkout: PENDING_SINGLE_USE
+- License Keys benefit: prefix SPLITSHIP-1X, 1 activation (audit via `.splitship-usage.json`)

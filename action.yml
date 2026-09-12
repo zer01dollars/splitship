@@ -1,5 +1,5 @@
 name: 'SplitShip'
-description: 'On release/tag, generate DEV.md + CUSTOMER.md + LINKEDIN.md from your commits. Made By Zer01.'
+description: 'On release/tag, generate DEV.md + CUSTOMER.md + LINKEDIN.md + X.md from your commits. Made By Zer01.'
 author: 'Zer01'
 branding:
   icon: 'ship'
@@ -28,9 +28,9 @@ inputs:
     description: 'BYOK OpenAI API key (optional; falls back to deterministic mode)'
     required: false
   llm-provider:
-    description: 'Preferred LLM provider: anthropic | openai | offline'
+    description: 'Preferred LLM provider: auto | anthropic | openai | offline (auto prefers anthropic when both keys set)'
     required: false
-    default: 'offline'
+    default: 'auto'
   output-dir:
     description: 'Directory to write generated markdown files'
     required: false
@@ -41,6 +41,18 @@ inputs:
   commit:
     description: 'Commit SHA to create/update files against'
     required: false
+  update-release:
+    description: 'When true, append/replace CUSTOMER markdown on the published GitHub Release body (<!-- splitship:customer --> markers)'
+    required: false
+    default: 'false'
+  append-changelog:
+    description: 'When true, prepend a Keep-a-Changelog section for the tag into CHANGELOG.md (or config changelogPath)'
+    required: false
+    default: 'false'
+  write-x:
+    description: 'Write X/Twitter draft (X.md). Default true; also written when config outputs.x is set'
+    required: false
+    default: 'true'
 
 outputs:
   dev-path:
@@ -49,6 +61,8 @@ outputs:
     description: 'Path to generated CUSTOMER.md'
   linkedin-path:
     description: 'Path to generated LINKEDIN.md'
+  x-path:
+    description: 'Path to generated X.md (when write-x or outputs.x)'
   mode:
     description: 'Generation mode used: anthropic | openai | offline'
 

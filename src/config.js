@@ -7,10 +7,13 @@ const DEFAULTS = {
     dev: 'DEV.md',
     customer: 'CUSTOMER.md',
     linkedin: 'LINKEDIN.md',
+    // x omitted by default; write-x input / outputs.x enables X.md
   },
   outputDir: '.',
+  changelogPath: 'CHANGELOG.md',
+  writeX: true,
   llm: {
-    provider: 'offline',
+    provider: 'auto',
     model: null,
   },
   tone: {
@@ -23,13 +26,15 @@ const DEFAULTS = {
     commits: true,
     authors: true,
   },
+  excludeTypes: [],
+  excludeSubjects: [],
 };
 
 /**
  * Load SplitShip config from YAML file + action inputs / env overrides.
  * @param {object} options
  * @param {string} [options.configPath]
- * @param {Record<string, string|undefined>} [options.inputs]
+ * @param {Record<string, string|undefined|boolean>} [options.inputs]
  * @returns {object}
  */
 export function loadConfig({ configPath = 'splitship.yml', inputs = {} } = {}) {
@@ -47,6 +52,13 @@ export function loadConfig({ configPath = 'splitship.yml', inputs = {} } = {}) {
     process.env.SPLITSHIP_LLM_PROVIDER ||
     DEFAULTS.llm.provider;
 
+  const writeX =
+    inputs.writeX !== undefined && inputs.writeX !== ''
+      ? inputs.writeX === true || inputs.writeX === 'true'
+      : fileConfig.writeX !== undefined
+        ? Boolean(fileConfig.writeX)
+        : DEFAULTS.writeX;
+
   return {
     ...DEFAULTS,
     ...fileConfig,
@@ -62,6 +74,8 @@ export function loadConfig({ configPath = 'splitship.yml', inputs = {} } = {}) {
       ...DEFAULTS.include,
       ...(fileConfig.include || {}),
     },
+    excludeTypes: fileConfig.excludeTypes || DEFAULTS.excludeTypes,
+    excludeSubjects: fileConfig.excludeSubjects || DEFAULTS.excludeSubjects,
     llm: {
       ...DEFAULTS.llm,
       ...(fileConfig.llm || {}),
@@ -69,7 +83,20 @@ export function loadConfig({ configPath = 'splitship.yml', inputs = {} } = {}) {
       model: inputs.model || fileConfig.llm?.model || DEFAULTS.llm.model,
     },
     outputDir: inputs.outputDir || fileConfig.outputDir || DEFAULTS.outputDir,
+    changelogPath:
+      inputs.changelogPath ||
+      fileConfig.changelogPath ||
+      DEFAULTS.changelogPath,
+    writeX,
     tag: inputs.tag || fileConfig.tag || null,
+    updateRelease:
+      inputs.updateRelease === true ||
+      inputs.updateRelease === 'true' ||
+      Boolean(fileConfig.updateRelease),
+    appendChangelog:
+      inputs.appendChangelog === true ||
+      inputs.appendChangelog === 'true' ||
+      Boolean(fileConfig.appendChangelog),
     anthropicApiKey:
       inputs.anthropicApiKey ||
       process.env.ANTHROPIC_API_KEY ||
